@@ -1,7 +1,7 @@
-## SQL_Database_CS
+# SQL_Database_CS
 DB for Customer Support operations
 
-# Customer Support Reporting Structure Overview
+## Customer Support Reporting Structure Overview
 Our reporting infrastructure for Customer Support—covering Hospitality, Payments, and Partners—is built on a SQL Server database designed to support daily operational insights and performance tracking.
 Data Source and ETL Process
 
@@ -9,7 +9,7 @@ The primary data source is Salesforce (SF).
 We apply a daily ETL (Extract, Transform, Load) process to clean, enrich, and structure the data before it enters the reporting database.
 Data manipulation and cleansing are performed using Excel and VBA macros, which allow for flexible handling of exceptions, data corrections, and formatting.
 
-# Database Structure
+## Database Structure
 
 The SQL Server database contains a set of reporting tables and views tailored to Customer Support metrics.
 These structures are designed to:
@@ -19,11 +19,12 @@ Support segmentation by department (Hospitality, Payments, Partners).
 Enable historical tracking and trend analysis.
 Facilitate integration with Excel-based dashboards and reports.
 
-# Key Features
+## Key Features
 
 Daily data refresh ensures reports reflect the most recent activity.
 Custom logic in VBA macros handles data validation, mapping, and transformation before loading into SQL.
 The structure supports KPI reporting, including metrics like ticket volume, resolution time, and agent performance.
+
 🧱 1. Schema Overview
 
 Schema Name: CustomerService
