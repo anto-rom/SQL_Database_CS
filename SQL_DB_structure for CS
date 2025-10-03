@@ -1,6 +1,3 @@
-## SQL Server DB Structure
-
-
 -- DROP SCHEMA CustomerService;
 
 CREATE SCHEMA CustomerService;
@@ -91,6 +88,15 @@ CREATE TABLE APP_FLOW.CustomerService.[date] ( date_id int IDENTITY(1,1) NOT NUL
 CREATE TABLE APP_FLOW.CustomerService.department ( department_id int IDENTITY(1,1) NOT NULL, department_name varchar(45) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL, vertical varchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL, department_group varchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL, team_hierarchy varchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL, CONSTRAINT department_pkey PRIMARY KEY (department_id));
 
 
+-- APP_FLOW.CustomerService.einstein_cases definition
+
+-- Drop table
+
+-- DROP TABLE APP_FLOW.CustomerService.einstein_cases;
+
+CREATE TABLE APP_FLOW.CustomerService.einstein_cases ( einstein_cases_id int IDENTITY(1,1) NOT NULL, [Date] date NULL, case_number int NULL, agent_id int NULL, case_reason nvarchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL, support_email_id int NULL, subreason nvarchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL, reopened bit NULL, resolution_reason nvarchar(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS NULL, CONSTRAINT PK__einstein__95186CE8545800AB PRIMARY KEY (einstein_cases_id));
+
+
 -- APP_FLOW.CustomerService.[language] definition
 
 -- Drop table
@@ -143,6 +149,15 @@ CREATE TABLE APP_FLOW.CustomerService.repeat_cases ( repeat_cases_id int IDENTIT
 -- DROP TABLE APP_FLOW.CustomerService.repeat_rate;
 
 CREATE TABLE APP_FLOW.CustomerService.repeat_rate ( repeat_rate_id int IDENTITY(1,1) NOT NULL, department_id int NOT NULL, agent_id int NOT NULL, [Date] date NULL, [3_repeats] int NULL, all_touchpoints int NULL, [Month] AS (format([Date],'MMMM')), CONSTRAINT repeat_rate_pkey PRIMARY KEY (repeat_rate_id));
+
+
+-- APP_FLOW.CustomerService.support_email definition
+
+-- Drop table
+
+-- DROP TABLE APP_FLOW.CustomerService.support_email;
+
+CREATE TABLE APP_FLOW.CustomerService.support_email ( support_email_id int NOT NULL, email_address text COLLATE SQL_Latin1_General_CP1_CI_AS NULL, department_id int NULL, CONSTRAINT PK__support___124642061368D92B PRIMARY KEY (support_email_id));
 
 
 -- APP_FLOW.CustomerService.surveys_sent definition
@@ -1061,6 +1076,8 @@ GROUP BY
 
 -- CustomerService.MONTHLY_VoC source
 
+-- CustomerService.MONTHLY_VoC source
+
 ALTER VIEW CustomerService.MONTHLY_VoC AS
 SELECT 
     d2.Month_number,
@@ -1070,9 +1087,10 @@ SELECT
     v.case_number,
     CONCAT(a.first_name, ' ', a.last_name) as agent_name, 
     d.department_name,
+    v.case_origin,
     v.NPS_Reason,
     v.NPS_type,
-    count (*) as No_surveys,
+    COUNT(*) as No_surveys,
     SUM(CASE WHEN v.survey_resolution = 1 THEN 1 ELSE 0 END) AS Resolved,
     COUNT(v.survey_resolution) AS Not_resolved,
     ROUND(SUM(CASE WHEN v.survey_resolution = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(v.survey_resolution), 0), 2) AS Resolution_total,
@@ -1090,7 +1108,7 @@ SELECT
     ROUND(SUM(CASE WHEN v.NES IN (4, 5) THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(v.NES), 0), 2) AS NES,
     SUM(CASE WHEN v.CSAT_Product IN (1, 2) THEN 1 ELSE 0 END) AS Product_negative,
     COUNT(v.CSAT_Product) AS product_total,
-      ROUND(SUM(CASE WHEN v.CSAT_Product IN (4, 5) THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(v.CSAT_Product), 0), 2) AS CSAT_Product
+    ROUND(SUM(CASE WHEN v.CSAT_Product IN (4, 5) THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(v.CSAT_Product), 0), 2) AS CSAT_Product
 FROM CustomerService.VoC v
 JOIN CustomerService.department d ON d.department_name = v.department_name
 JOIN CustomerService.date d2 ON d2.Date = v.Date
@@ -1105,7 +1123,8 @@ GROUP BY
     a.last_name,
     v.NPS_Reason,
     v.NPS_Type,
-	d2.Date;
+    v.case_origin,
+    d2.Date;
 
 
 -- CustomerService.MONTHLY_VoC_Reasons source
@@ -1128,6 +1147,75 @@ GROUP BY
     v.NPS_type, 
     v.Year, 
     d.department_name;
+
+
+-- CustomerService.MONTHLY_VoC_SUMMARY source
+
+ALTER   VIEW CustomerService.MONTHLY_VoC_SUMMARY AS
+WITH voc_base AS (
+    SELECT 
+        d2.Month_number,
+        d2.Week_Year,
+        d.department_name,
+        COUNT(*) as No_surveys,
+        SUM(CASE WHEN v.survey_resolution = 1 THEN 1 ELSE 0 END) AS Resolved,
+        COUNT(v.survey_resolution) AS Not_resolved,
+        SUM(CASE WHEN v.NPS IN (9, 10) THEN 1 ELSE 0 END) AS nps_promoter,
+        SUM(CASE WHEN v.NPS BETWEEN 0 AND 6 THEN 1 ELSE 0 END) AS nps_detractor,
+        COUNT(v.NPS) AS nps_total,
+        SUM(CASE WHEN v.CSAT_Service IN (4, 5) THEN 1 ELSE 0 END) AS csat_positive,
+        SUM(CASE WHEN v.CSAT_Service IN (1, 2) THEN 1 ELSE 0 END) AS csat_negative,
+        COUNT(v.CSAT_Service) AS csat_total,
+        SUM(CASE WHEN v.NES IN (4, 5) THEN 1 ELSE 0 END) AS nes_positive,
+        SUM(CASE WHEN v.NES IN (1, 2) THEN 1 ELSE 0 END) AS nes_negative,
+        COUNT(v.NES) AS nes_total,
+        SUM(CASE WHEN v.CSAT_Product IN (1, 2) THEN 1 ELSE 0 END) AS product_negative,
+        COUNT(v.CSAT_Product) AS product_total
+    FROM CustomerService.VoC v
+    JOIN CustomerService.department d ON d.department_name = v.department_name
+    JOIN CustomerService.date d2 ON d2.Date = v.Date
+    GROUP BY d2.Month_number, d2.Week_Year, d.department_name
+),
+surveys_sent_monthly AS (
+    SELECT 
+        d.Month_number,
+        d.Week_Year,
+        dp.department_name,
+        COUNT(*) AS surveys_sent_total
+    FROM APP_FLOW.CustomerService.surveys_sent ss
+    JOIN CustomerService.department dp ON dp.department_id = ss.department_id
+    JOIN CustomerService.date d ON d.Date = ss.Date
+    GROUP BY d.Month_number, d.Week_Year, dp.department_name
+)
+SELECT 
+    vb.Month_number,
+    vb.Week_Year,
+    vb.department_name,
+    vb.No_surveys,
+    vb.Resolved,
+    vb.Not_resolved,
+    ROUND(vb.Resolved * 100.0 / NULLIF(vb.Not_resolved, 0), 2) AS Resolution_total,
+    vb.nps_promoter,
+    vb.nps_detractor,
+    vb.nps_total,
+    ROUND((vb.nps_promoter - vb.nps_detractor) * 100.0 / NULLIF(vb.nps_total, 0), 2) AS NPS,
+    vb.csat_positive,
+    vb.csat_negative,
+    vb.csat_total,
+    ROUND(vb.csat_positive * 100.0 / NULLIF(vb.csat_total, 0), 2) AS CSAT_Service,
+    vb.nes_positive,
+    vb.nes_negative,
+    vb.nes_total,
+    ROUND(vb.nes_positive * 100.0 / NULLIF(vb.nes_total, 0), 2) AS NES,
+    vb.product_negative,
+    vb.product_total,
+    ROUND((vb.product_total - vb.product_negative) * 100.0 / NULLIF(vb.product_total, 0), 2) AS CSAT_Product,
+    ISNULL(ssm.surveys_sent_total, 0) AS surveys_sent_total
+FROM voc_base vb
+LEFT JOIN surveys_sent_monthly ssm 
+    ON ssm.Month_number = vb.Month_number 
+    AND ssm.Week_Year = vb.Week_Year 
+    AND ssm.department_name = vb.department_name;
 
 
 -- CustomerService.MONTHLY_case_reasons source
@@ -1158,6 +1246,56 @@ GROUP BY
     cs.case_subreason;
 
 
+-- CustomerService.MONTHLY_einstein source
+
+-- CustomerService.MONTHLY_einstein source
+
+ALTER VIEW CustomerService.MONTHLY_einstein AS
+SELECT 
+    d.Month_number,
+    dp.department_name AS department,
+    CAST(se.email_address AS VARCHAR(MAX)) AS email_address,
+    COUNT(ec.case_number) AS total_cases,
+    SUM(CASE WHEN ec.reopened = 1 THEN 1 ELSE 0 END) AS Reopened,
+    SUM(CASE WHEN ec.reopened = 0 THEN 1 ELSE 0 END) AS Not_Reopened,
+    ROUND(
+        CAST(SUM(CASE WHEN ec.reopened = 0 THEN 1 ELSE 0 END) AS FLOAT) / 
+        NULLIF(COUNT(ec.case_number), 0), 
+        2
+    ) AS Not_Reopened_Percentage,
+    ROUND(
+        CAST(SUM(CASE WHEN ec.reopened = 1 THEN 1 ELSE 0 END) AS FLOAT) / 
+        NULLIF(COUNT(ec.case_number), 0), 
+        2
+    ) AS Reopened_Percentage,
+    MAX(it_monthly.sum) AS incoming_tickets,
+    ROUND(
+        CAST(SUM(CASE WHEN ec.reopened = 1 THEN 1 ELSE 0 END) AS FLOAT) / 
+        NULLIF(MAX(it_monthly.sum), 0), 
+        2
+    ) AS Reopened_vs_Incoming
+FROM CustomerService.einstein_cases ec
+JOIN CustomerService.date d ON ec.Date = d.Date
+JOIN CustomerService.support_email se ON ec.support_email_id = se.support_email_id
+JOIN CustomerService.department dp ON dp.department_id = se.department_id
+LEFT JOIN (
+    SELECT 
+        d.Month_number,
+        dp.department_id,
+        SUM(it.ticket_total) AS sum
+    FROM CustomerService.incoming_tickets it
+    JOIN CustomerService.date d ON it.Date = d.Date
+    JOIN CustomerService.department dp ON dp.department_id = it.department_id
+    GROUP BY d.Month_number, dp.department_id
+) it_monthly ON d.Month_number = it_monthly.Month_number AND dp.department_id = it_monthly.department_id
+GROUP BY 
+    d.Month_number, 
+    dp.department_name,
+    CAST(se.email_address AS VARCHAR(MAX));
+
+
+-- CustomerService.MONTHLY_surveys_sent source
+
 -- CustomerService.MONTHLY_surveys_sent source
 
 -- CustomerService.MONTHLY_surveys_sent source
@@ -1169,7 +1307,7 @@ SELECT
     d.Week_number,
     ss.department_id,
     dp.department_name,
-    COUNT (ss.surveys_sent_id) AS No_surveys ,
+    COUNT (ss.surveys_sent_id) AS No_surveys,
     ss.Date
 FROM CustomerService.surveys_sent as ss
 JOIN CustomerService.date d ON d.Date = SS.Date
@@ -1373,6 +1511,8 @@ GROUP BY
 
 -- CustomerService.WEEKLY_Productivity source
 
+-- CustomerService.WEEKLY_Productivity source
+
 ALTER VIEW [CustomerService].[WEEKLY_Productivity]
 AS
 WITH base AS (
@@ -1389,7 +1529,8 @@ SELECT
     [Week_Year],
     [Week_number],
     [department_name],
-    CAST(AVG(productivity_total) AS DECIMAL(18,2)) AS productivity
+    CAST(AVG(productivity_total) AS DECIMAL(18,2)) AS productivity_avg,
+    CAST(SUM(productivity_total) AS DECIMAL(18,2)) AS productivity_total
 FROM base
 GROUP BY
     [Week_Year],
@@ -1552,3 +1693,49 @@ GROUP BY
     d.[Week_number],
     dep.[department_id],
     dep.[department_name];
+
+
+-- CustomerService.WEEKLY_einstein source
+
+ALTER VIEW CustomerService.WEEKLY_einstein AS
+SELECT 
+    d.Week_number,
+    dp.department_name AS department,
+    CAST(se.email_address AS VARCHAR(MAX)) AS email_address,
+    COUNT(ec.case_number) AS total_cases,
+    SUM(CASE WHEN ec.reopened = 1 THEN 1 ELSE 0 END) AS Reopened,
+    SUM(CASE WHEN ec.reopened = 0 THEN 1 ELSE 0 END) AS Not_Reopened,
+    ROUND(
+        CAST(SUM(CASE WHEN ec.reopened = 0 THEN 1 ELSE 0 END) AS FLOAT) / 
+        NULLIF(COUNT(ec.case_number), 0), 
+        2
+    ) AS Not_Reopened_Percentage,
+    ROUND(
+        CAST(SUM(CASE WHEN ec.reopened = 1 THEN 1 ELSE 0 END) AS FLOAT) / 
+        NULLIF(COUNT(ec.case_number), 0), 
+        2
+    ) AS Reopened_Percentage,
+    MAX(it_weekly.sum) AS incoming_tickets,
+    ROUND(
+        CAST(SUM(CASE WHEN ec.reopened = 1 THEN 1 ELSE 0 END) AS FLOAT) / 
+        NULLIF(MAX(it_weekly.sum), 0), 
+        2
+    ) AS Reopened_vs_Incoming
+FROM CustomerService.einstein_cases ec
+JOIN CustomerService.date d ON ec.Date = d.Date
+JOIN CustomerService.support_email se ON ec.support_email_id = se.support_email_id
+JOIN CustomerService.department dp ON dp.department_id = se.department_id
+LEFT JOIN (
+    SELECT 
+        d.Week_number,
+        dp.department_id,
+        SUM(it.ticket_total) AS sum
+    FROM CustomerService.incoming_tickets it
+    JOIN CustomerService.date d ON it.Date = d.Date
+    JOIN CustomerService.department dp ON dp.department_id = it.department_id
+    GROUP BY d.Week_number, dp.department_id
+) it_weekly ON d.Week_number = it_weekly.Week_number AND dp.department_id = it_weekly.department_id
+GROUP BY 
+    d.Week_number, 
+    dp.department_name,
+    CAST(se.email_address AS VARCHAR(MAX));
