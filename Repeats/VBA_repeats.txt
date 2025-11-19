@@ -1,0 +1,266 @@
+SF report no: 00OR60000074jQkMAI   
+
+Excel origin: https://fintraxgroupholdings.sharepoint.com/:x:/r/teams/CSCITeam-Qualitystatsshared/Shared%20Documents/DATA%20BASE/Repeat%20Analysis/Repeat%20MATRIX.xlsb?d=wa4be8fabcb8149cf8dda626c25199ad2&csf=1&web=1&e=EsnaaO
+
+
+Option Explicit
+
+' ===============================
+'  Azure SQL Export – Self-Service
+'  Autor: Antonio Romero
+'  Última revisión: 2025-08-14
+' ===============================
+
+' === Configuración ===
+Private Const SCHEMA_NAME As String = "CustomerService"
+Private Const TABLE_NAME As String = "repeat_rate"
+Private Const ROWS_PER_BATCH As Long = 900
+Private Const WRAP_ALL_VALUES_IN_QUOTES As Boolean = True   ' True = comillas para todo
+
+' === Ruta de salida dinámica (Descargas del usuario, con fallback) ===
+Private Function GetOutputFolder() As String
+    Dim p As String, d As String
+    p = Environ$("USERPROFILE")
+    If Len(p) = 0 Then
+        p = Environ$("HOMEDRIVE") & Environ$("HOMEPATH")
+    End If
+    d = p & "\Downloads"
+    If Len(Dir$(d, vbDirectory)) > 0 Then
+        GetOutputFolder = d
+    Else
+        GetOutputFolder = ThisWorkbook.Path
+    End If
+End Function
+
+' ============ Núcleo: Exportador ============
+Public Sub ExportRepeatRateToSQL()
+    Dim ws As Worksheet
+    Dim rngHeaders As Range
+    Dim lastRow As Long, lastCol As Long
+    Dim hMap As Object
+    Dim requiredHeaders As Variant
+    Dim fso As Object, ts As Object
+    Dim outPath As String, fileName As String
+    Dim insertHead As String
+    Dim i As Long, rowCount As Long
+    Dim sep As String, valuesLine As String
+    
+    On Error GoTo ErrHandler
+    
+    Set ws = ActiveSheet  ' O fija el nombre de la hoja si prefieres
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    
+    If lastRow < 2 Then
+        MsgBox "No hay datos para exportar.", vbExclamation
+        Exit Sub
+    End If
+    
+    Set rngHeaders = ws.Range(ws.Cells(1, 1), ws.Cells(1, lastCol))
+    Set hMap = CreateObject("Scripting.Dictionary")
+    
+    Dim c As Range
+    For Each c In rngHeaders
+        If Len(Trim$(c.Value)) > 0 Then
+            hMap(Trim$(CStr(c.Value))) = c.Column
+        End If
+    Next c
+    
+    requiredHeaders = Array("department_id", "agent_id", "Date", "3_repeats", "all_touchpoints")
+    Dim miss As String, k As Variant
+    For Each k In requiredHeaders
+        If Not hMap.Exists(CStr(k)) Then miss = miss & k & ", "
+    Next k
+    If Len(miss) > 0 Then
+        miss = Left$(miss, Len(miss) - 2)
+        MsgBox "Faltan columnas requeridas: " & miss, vbCritical
+        Exit Sub
+    End If
+    
+    insertHead = "INSERT INTO [" & SCHEMA_NAME & "].[" & TABLE_NAME & "] " & _
+                 "([department_id],[agent_id],[Date],[3_repeats],[all_touchpoints]) VALUES" & vbCrLf
+    
+    fileName = "repeat_rate_" & Format(Now, "yyyy-mm-dd_HHMMss") & ".sql"
+    outPath = GetOutputFolder()
+    If Right$(outPath, 1) <> "\" Then outPath = outPath & "\"
+    outPath = outPath & fileName
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set ts = fso.CreateTextFile(outPath, True, False) ' ASCII
+    
+    ' Preámbulo transaccional
+    ts.WriteLine "SET NOCOUNT ON;"
+    ts.WriteLine "SET XACT_ABORT ON;"
+    ts.WriteLine "BEGIN TRAN;"
+    ts.WriteLine ""
+    
+    rowCount = 0
+    sep = ""
+    
+    For i = 2 To lastRow
+        Dim vDept As String, vAgent As String, vDate As String, vR3 As String, vAll As String
+        
+        vDept = CellToSQL(ws.Cells(i, hMap("department_id")).Value)
+        vAgent = CellToSQL(ws.Cells(i, hMap("agent_id")).Value)
+        vDate = DateCellToSQL(ws.Cells(i, hMap("Date")).Value)
+        vR3 = CellToSQL(ws.Cells(i, hMap("3_repeats")).Value)
+        vAll = CellToSQL(ws.Cells(i, hMap("all_touchpoints")).Value)
+        
+        If rowCount = 0 Then
+            ts.Write insertHead
+            sep = ""
+        Else
+            sep = "," & vbCrLf
+        End If
+        
+        valuesLine = sep & "(" & vDept & "," & vAgent & "," & vDate & "," & vR3 & "," & vAll & ")"
+        ts.Write valuesLine
+        
+        rowCount = rowCount + 1
+        
+        If rowCount >= ROWS_PER_BATCH Then
+            ts.WriteLine ";" & vbCrLf
+            rowCount = 0
+        End If
+    Next i
+    
+    If rowCount > 0 Then
+        ts.WriteLine ";" & vbCrLf
+    End If
+    
+    ts.WriteLine "COMMIT TRAN;"
+    ts.Close
+    
+    MsgBox "Export completado en: " & outPath, vbInformation
+    Exit Sub
+    
+ErrHandler:
+    On Error Resume Next
+    If Not ts Is Nothing Then ts.Close
+    MsgBox "Error en exportación: " & Err.Description, vbCritical
+End Sub
+
+' ============ Helpers ============
+Private Function CellToSQL(ByVal v As Variant) As String
+    If IsError(v) Or IsEmpty(v) Then
+        CellToSQL = "NULL": Exit Function
+    End If
+    
+    Dim s As String
+    s = Trim$(CStr(v))
+    If s = "" Or UCase$(s) = "NULL" Then
+        CellToSQL = "NULL": Exit Function
+    End If
+    
+    If WRAP_ALL_VALUES_IN_QUOTES Then
+        s = Replace(s, "'", "''")
+        CellToSQL = "'" & s & "'"
+    Else
+        If IsNumeric(s) Then
+            CellToSQL = s
+        Else
+            s = Replace(s, "'", "''")
+            CellToSQL = "'" & s & "'"
+        End If
+    End If
+End Function
+
+Private Function DateCellToSQL(ByVal v As Variant) As String
+    If IsError(v) Or IsEmpty(v) Or Trim$(CStr(v)) = "" Then
+        DateCellToSQL = "NULL": Exit Function
+    End If
+    
+    On Error GoTo notdate
+    Dim dt As Date: dt = CDate(v)
+    On Error GoTo 0
+    
+    DateCellToSQL = "'" & Format$(dt, "yyyy-mm-dd") & "'"
+    Exit Function
+notdate:
+    DateCellToSQL = CellToSQL(v)
+End Function
+
+' ============ UX: Botón y hoja de ayuda ============
+Public Sub AddExportButton()
+    Dim shp As Shape
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+    
+    On Error Resume Next
+    ws.Shapes("btn_export_sql").Delete
+    On Error GoTo 0
+    
+    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, 30, 30, 220, 40)
+    With shp
+        .Name = "btn_export_sql"
+        .TextFrame.Characters.Text = "Exportar a SQL (Azure)"
+        .Fill.ForeColor.RGB = RGB(0, 120, 215)
+        .Line.Visible = msoFalse
+        .TextFrame.HorizontalAlignment = xlHAlignCenter
+        .TextFrame.VerticalAlignment = xlVAlignCenter
+        .TextFrame.Characters.Font.Color = vbWhite
+        .TextFrame.Characters.Font.Bold = True
+        .OnAction = "ExportRepeatRateToSQL"
+    End With
+    
+    MsgBox "Botón creado y vinculado a ExportRepeatRateToSQL.", vbInformation
+End Sub
+
+Public Sub CreateSQLExportHelpSheet()
+    Dim ws As Worksheet, sht As Worksheet
+    
+    For Each sht In ThisWorkbook.Worksheets
+        If sht.Name = "SQL Export Help" Then
+            Application.DisplayAlerts = False
+            sht.Delete
+            Application.DisplayAlerts = True
+            Exit For
+        End If
+    Next sht
+    
+    Set ws = ThisWorkbook.Worksheets.Add(After:=Sheets(Sheets.Count))
+    ws.Name = "SQL Export Help"
+    
+    With ws.Range("A1")
+        .Value = "Export to Azure SQL — Quick Guide"
+        .Font.Size = 16
+        .Font.Bold = True
+    End With
+    
+    ws.Range("A3").Value = "Requisitos de la tabla (fila 1 = encabezados, datos desde fila 2):"
+    ws.Range("A4").Value = "• department_id"
+    ws.Range("A5").Value = "• agent_id"
+    ws.Range("A6").Value = "• Date (la macro lo normaliza a yyyy-mm-dd)"
+    ws.Range("A7").Value = "• 3_repeats"
+    ws.Range("A8").Value = "• all_touchpoints"
+    
+    ws.Range("A10").Value = "Cómo exportar"
+    ws.Range("A10").Font.Bold = True
+    ws.Range("A11").Value = "1) Ve a la hoja con los datos (verifica los encabezados)."
+    ws.Range("A12").Value = "2) Pulsa el botón “Exportar a SQL (Azure)”."
+    ws.Range("A13").Value = "3) Se genera un .sql en la carpeta Descargas del usuario."
+    ws.Range("A14").Value = "   Si no existe Descargas, se guardará en la carpeta del archivo."
+    
+    ws.Range("A16").Value = "Parámetros (en el código):"
+    ws.Range("A17").Value = "• SCHEMA_NAME = ""CustomerService"""
+    ws.Range("A18").Value = "• TABLE_NAME = ""repeat_rate"""
+    ws.Range("A19").Value = "• ROWS_PER_BATCH = 500 (ajustable)"
+    ws.Range("A20").Value = "• WRAP_ALL_VALUES_IN_QUOTES = True"
+    
+    ws.Range("A22").Value = "Notas de calidad"
+    ws.Range("A22").Font.Bold = True
+    ws.Range("A23").Value = "• Vacíos/“NULL” ? NULL sin comillas."
+    ws.Range("A24").Value = "• Se escapan comillas simples (O''Brien)."
+    ws.Range("A25").Value = "• Columnas con corchetes (incluye [3_repeats])."
+    
+    ws.Columns("A:A").EntireColumn.AutoFit
+End Sub
+
+' One-click: crea ayuda y botón
+Public Sub SetupExportUX()
+    Call CreateSQLExportHelpSheet
+    Call AddExportButton
+    MsgBox "Setup completado. Revisa la hoja 'SQL Export Help' y el botón en la hoja de datos.", vbInformation
+End Sub
+
+

@@ -1,0 +1,273 @@
+SF report no: 00OR60000074jQkMAI
+
+Option Explicit
+
+'==================== PARAMS ====================
+Private Const TARGET_SCHEMA As String = "CustomerService"
+Private Const TARGET_TABLE  As String = "repeat_cases"   ' Fuerza el nombre de tabla en el INSERT
+Private Const HEADER_ROW    As Long = 1
+
+' Nombres de hojas
+Private Const MAIN_SHEET As String = "repeat_cases"      ' Hoja renombrada
+Private Const AGENT_SHEET As String = "agent"            ' A: id, B: nombre
+Private Const DEPT_SHEET  As String = "department"       ' A: id, B: nombre
+
+' Columnas a mapear en MAIN por posición
+Private Const COL_AGENT_IN_MAIN As Long = 3              ' Columna C
+Private Const COL_DEPT_IN_MAIN  As Long = 4              ' Columna D
+
+' Si pegaste este módulo en PERSONAL.XLSB, pon True para que apunte al libro activo
+Private Const USE_ACTIVE_WORKBOOK As Boolean = False
+'==================================================
+
+Public Sub MapAndExport()
+    On Error GoTo ErrHandler
+    Dim t0 As Double: t0 = Timer
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Dim wb As Workbook
+    Set wb = IIf(USE_ACTIVE_WORKBOOK, ActiveWorkbook, ThisWorkbook)
+
+    ' === Resolver hojas con diagnóstico ===
+    Dim wsMain As Worksheet, wsAgent As Worksheet, wsDept As Worksheet
+    Set wsMain = GetSheetOrFail(wb, MAIN_SHEET)
+    Set wsAgent = GetSheetOrFail(wb, AGENT_SHEET)
+    Set wsDept = GetSheetOrFail(wb, DEPT_SHEET)
+
+    ' 1) Diccionarios de mapeo
+    Dim dictAgent As Object, dictDept As Object
+    Set dictAgent = BuildMapDictionary(wsAgent, keyCol:=2, valCol:=1) ' B->A (nombre->id)
+    Set dictDept = BuildMapDictionary(wsDept, keyCol:=2, valCol:=1)   ' B->A (nombre->id)
+
+    ' 2) Mapear MAIN en memoria
+    Dim lastRow As Long, lastCol As Long
+    lastRow = wsMain.Cells(wsMain.Rows.Count, 1).End(xlUp).Row
+    lastCol = wsMain.Cells(HEADER_ROW, wsMain.Columns.Count).End(xlToLeft).Column
+    If lastRow <= HEADER_ROW Then Err.Raise vbObjectError + 1, , MAIN_SHEET & " no tiene filas de datos."
+
+    Dim data As Variant: data = wsMain.Range(wsMain.Cells(1, 1), wsMain.Cells(lastRow, lastCol)).Value
+
+    Dim notFoundAgents As Collection: Set notFoundAgents = New Collection
+    Dim notFoundDepts As Collection: Set notFoundDepts = New Collection
+
+    Dim r As Long
+    For r = HEADER_ROW + 1 To UBound(data, 1)
+        data(r, COL_AGENT_IN_MAIN) = MapValue(CStr(data(r, COL_AGENT_IN_MAIN)), dictAgent, notFoundAgents)
+        data(r, COL_DEPT_IN_MAIN) = MapValue(CStr(data(r, COL_DEPT_IN_MAIN)), dictDept, notFoundDepts)
+    Next r
+
+    ' Volcar cambios a la hoja
+    wsMain.Range(wsMain.Cells(1, 1), wsMain.Cells(lastRow, lastCol)).Value = data
+
+    ' 3) Export a Downloads
+    Dim outPath As String
+    outPath = GetDownloadsPath() & "\" & wsMain.Name & "_" & Format(Now, "yyyymmdd_hhnnss") & ".sql"
+    ExportInsertSQL wsMain, HEADER_ROW, outPath
+
+    ' 4) Reporte
+    If notFoundAgents.Count > 0 Or notFoundDepts.Count > 0 Then
+        CreateLogSheet notFoundAgents, notFoundDepts, wb
+        MsgBox "Export OK: " & outPath & vbCrLf & _
+               "Agentes sin mapear: " & notFoundAgents.Count & vbCrLf & _
+               "Departamentos sin mapear: " & notFoundDepts.Count & vbCrLf & _
+               "Se creó hoja 'map_log' con detalle.", vbExclamation, "Completado con avisos"
+    Else
+        MsgBox "Export OK: " & outPath, vbInformation, "Completado"
+    End If
+
+CleanExit:
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Debug.Print "Elapsed (s): "; Round(Timer - t0, 2)
+    Exit Sub
+ErrHandler:
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "Error: " & Err.Description, vbCritical, "MapAndExport"
+End Sub
+
+'----------------- UTILIDADES -----------------
+
+Private Function GetSheetOrFail(wb As Workbook, ByVal expectedName As String) As Worksheet
+    Dim ws As Worksheet, wanted As String, got As String
+    wanted = LCase$(Trim$(expectedName))
+    For Each ws In wb.Worksheets
+        got = LCase$(Trim$(ws.Name))
+        If got = wanted Then
+            Set GetSheetOrFail = ws
+            Exit Function
+        End If
+    Next ws
+    ' No encontrada: lista disponibles
+    Dim lst As String
+    For Each ws In wb.Worksheets
+        lst = lst & "'" & ws.Name & "', "
+    Next ws
+    If Len(lst) > 2 Then lst = Left$(lst, Len(lst) - 2)
+    Err.Raise vbObjectError + 99, , _
+        "No encuentro la hoja '" & expectedName & "'. Hojas disponibles en '" & wb.Name & "': " & lst & _
+        vbCrLf & "Acción: renombra la hoja o ajusta las constantes MAIN_SHEET / AGENT_SHEET / DEPT_SHEET."
+End Function
+
+Private Function BuildMapDictionary(ws As Worksheet, ByVal keyCol As Long, ByVal valCol As Long) As Object
+    Dim dict As Object: Set dict = CreateObject("Scripting.Dictionary")
+    dict.CompareMode = vbTextCompare
+    Dim lastRow As Long: lastRow = ws.Cells(ws.Rows.Count, keyCol).End(xlUp).Row
+    Dim i As Long, k As String, v As Variant
+    For i = 2 To lastRow
+        k = Trim$(CStr(ws.Cells(i, keyCol).Value))
+        If Len(k) > 0 Then
+            v = ws.Cells(i, valCol).Value
+            If Not dict.Exists(k) Then dict.Add k, v
+        End If
+    Next i
+    Set BuildMapDictionary = dict
+End Function
+
+Private Function MapValue(ByVal raw As String, ByVal dict As Object, ByRef notFound As Collection) As Variant
+    Dim key As String: key = Trim$(raw)
+    If Len(key) = 0 Then MapValue = "": Exit Function
+    If dict.Exists(key) Then
+        MapValue = dict(key)
+    Else
+        notFound.Add key
+        MapValue = key
+    End If
+End Function
+
+Private Sub ExportInsertSQL(ws As Worksheet, ByVal headerRow As Long, ByVal outPath As String)
+    Dim lastRow As Long, lastCol As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+
+    Dim cols() As String, c As Long
+    ReDim cols(1 To lastCol)
+    For c = 1 To lastCol
+        cols(c) = "[" & CStr(ws.Cells(headerRow, c).Value) & "]"
+    Next c
+
+    Dim schemaName As String, tableName As String
+    schemaName = TARGET_SCHEMA
+    tableName = TARGET_TABLE                                    ' Fuerza repeat_cases
+
+    Dim fso As Object, ts As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set ts = fso.CreateTextFile(outPath, True, True) ' Unicode
+
+    Dim i As Long, line As String
+    Dim batchSize As Long: batchSize = 1000
+    Dim rowCount As Long: rowCount = 0
+    Dim valuesBlock As String
+
+    For i = headerRow + 1 To lastRow
+        If rowCount = 0 Then
+            ts.WriteLine "INSERT INTO [" & schemaName & "].[" & tableName & "] (" & Join(cols, ", ") & ")"
+            ts.WriteLine "VALUES"
+            valuesBlock = ""
+        End If
+
+        line = "  (" & RowToSqlValues(ws, i, lastCol) & ")"
+        rowCount = rowCount + 1
+
+        If rowCount = batchSize Or i = lastRow Then
+            If i = lastRow Then
+                valuesBlock = valuesBlock & line & ";"
+            Else
+                valuesBlock = valuesBlock & line & ";"
+            End If
+            valuesBlock = Replace(valuesBlock, ");  (", ")," & vbCrLf & "  (")
+            ts.WriteLine valuesBlock
+            ts.WriteLine "GO"
+            rowCount = 0
+        Else
+            valuesBlock = valuesBlock & line & ", "
+        End If
+    Next i
+
+    ts.Close
+End Sub
+
+Private Function RowToSqlValues(ws As Worksheet, ByVal rowIdx As Long, ByVal lastCol As Long) As String
+    Dim arr() As String
+    ReDim arr(1 To lastCol)
+    Dim c As Long, v As Variant
+    For c = 1 To lastCol
+        v = ws.Cells(rowIdx, c).Value
+        arr(c) = ToSqlLiteral(v)
+    Next c
+    RowToSqlValues = Join(arr, ", ")
+End Function
+
+Private Function ToSqlLiteral(ByVal v As Variant) As String
+    If IsEmpty(v) Then ToSqlLiteral = "NULL": Exit Function
+    On Error GoTo NotDate
+    If IsDate(v) Then
+        ToSqlLiteral = "'" & Format$(CDate(v), "yyyy-mm-dd HH:nn:ss") & "'"
+        Exit Function
+    End If
+NotDate:
+    Dim s As String: s = Trim$(CStr(v))
+    If Len(s) = 0 Then
+        ToSqlLiteral = "NULL"
+    Else
+        s = Replace$(s, "'", "''")
+        ToSqlLiteral = "'" & s & "'"
+    End If
+End Function
+
+Private Function GetDownloadsPath() As String
+    GetDownloadsPath = Environ$("USERPROFILE") & "\Downloads"
+End Function
+
+Private Sub CreateLogSheet(ByVal notFoundAgents As Collection, ByVal notFoundDepts As Collection, wb As Workbook)
+    Dim ws As Worksheet
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    wb.Worksheets("map_log").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+
+    Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+    ws.Name = "map_log"
+    ws.Range("A1").Value = "Agentes no mapeados"
+    ws.Range("C1").Value = "Departamentos no mapeados"
+
+    Dim i As Long
+    For i = 1 To notFoundAgents.Count: ws.Cells(i + 1, 1).Value = notFoundAgents(i): Next i
+    For i = 1 To notFoundDepts.Count:  ws.Cells(i + 1, 3).Value = notFoundDepts(i):  Next i
+    ws.Columns.AutoFit
+End Sub
+
+'----------------- BOTÓN -----------------
+
+Public Sub CrearBotonExportar()
+    Dim wb As Workbook: Set wb = IIf(USE_ACTIVE_WORKBOOK, ActiveWorkbook, ThisWorkbook)
+    Dim ws As Worksheet: Set ws = GetSheetOrFail(wb, MAIN_SHEET)
+
+    ' Limpia botones previos similares
+    Dim btn As Button
+    For Each btn In ws.Buttons
+        If InStr(1, btn.Caption, "Exportar a SQL", vbTextCompare) > 0 Then btn.Delete
+    Next btn
+
+    ' Crear botón
+    Dim leftPos As Double, topPos As Double, w As Double, h As Double
+    leftPos = ws.Range("A1").Left
+    topPos = ws.Range("A1").Top + 5
+    w = 200: h = 28
+
+    Dim newBtn As Button
+    Set newBtn = ws.Buttons.Add(leftPos, topPos, w, h)
+    With newBtn
+        .Caption = "Exportar a SQL (" & MAIN_SHEET & ")"
+        .OnAction = "MapAndExport"
+        .Placement = xlMoveAndSize
+    End With
+End Sub
+
+
+

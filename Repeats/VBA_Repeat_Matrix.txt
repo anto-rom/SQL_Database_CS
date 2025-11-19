@@ -1,0 +1,125 @@
+SF Report no.00OR60000074jQkMAI
+
+Sub get_sf_report1()
+Dim wb, wb1, wb2 As Workbook
+Dim ws_calls, ws_all As Worksheet
+
+Set wb = ThisWorkbook
+Set wb1 = Workbooks.Open(Application.GetOpenFilename(, , "Select Calls File"))
+On Error Resume Next
+wb1.AutoSaveOn = False
+On Error GoTo 0
+
+Set ws_calls = wb.Sheets("NB Repeats")
+wb.Activate
+ws_calls.Select
+ws_calls.Cells.Clear
+With wb1.Sheets(1)
+    .Activate
+    .Rows("1:25").Delete
+    .Columns(1).Delete
+    .Columns("C:D").Delete Shift:=xlToLeft
+    .Columns("D:G").Delete Shift:=xlToLeft
+    .Columns("E:H").Delete Shift:=xlToLeft
+    For i = 2 To .Cells(100000, 1).End(xlUp).Row
+        .Cells(i, 3).Value = .Cells(i, 3).Value & .Cells(i, 4).Value
+    Next i
+    .Columns(4).Delete
+    .UsedRange.Copy
+End With
+ws_calls.Activate
+ws_calls.Cells(1, 1).PasteSpecial
+wb1.Close False
+
+End Sub
+Sub get_sf_report2()
+Dim wb, wb1, wb2 As Workbook
+Dim ws_calls, ws_all As Worksheet
+
+Set wb = ThisWorkbook
+Set wb1 = Workbooks.Open(Application.GetOpenFilename(, , "Select Total File"))
+
+Set ws_calls = wb.Sheets("Data_Total")
+wb.Activate
+ws_calls.Select
+ws_calls.Cells.Clear
+With wb1.Sheets(1)
+    .Activate
+    .Rows("1:25").Delete
+    .Columns(1).Delete
+    .Columns("C:D").Delete Shift:=xlToLeft
+    .Columns("D:L").Delete Shift:=xlToLeft
+    .UsedRange.Copy
+End With
+ws_calls.Activate
+ws_calls.Cells(1, 1).PasteSpecial
+wb1.Close False
+
+End Sub
+Sub fill_values1()
+Dim wb As Workbook
+Dim ws_calls, ws_all As Worksheet
+
+Set wb = ThisWorkbook
+Set ws_calls = wb.Sheets("NB Repeats")
+With ws_calls
+    For i = 2 To .Cells(100000, 1).End(xlUp).Row
+'        .Cells(i, 1).NumberFormat = "@"
+        If .Cells(i, 1).Value = "" Then
+            .Cells(i, 1).NumberFormat = "@"
+            .Cells(i, 2).NumberFormat = "@"
+            .Cells(i, 1).Value = .Cells(i - 1, 1).Value
+            .Cells(i, 2).Value = .Cells(i - 1, 2).Value
+        End If
+    Next i
+    For i = 2 To .Cells(10000, 1).End(xlUp).Row
+        .Cells(i, 4) = Application.WorksheetFunction.CountIf(.Range("A:A"), .Cells(i, 1).Value)
+'        .Cells(i, 4) = Application.WorksheetFunction.CountIf(.Cells(i, 1), .Columns(1))
+    Next i
+    .Cells(1, 4).Value = "NB_Repeats"
+    .Columns("A:D").Copy
+    .Columns("A:D").PasteSpecial xlValues
+'    .Columns(4).Copy
+'    .Columns(7).PasteSpecial
+    .Columns("A:D").RemoveDuplicates Columns:=Array(1, 2, 3, 4), Header:=xlYes
+
+End With
+End Sub
+Sub fill_values2()
+Dim wb As Workbook
+Dim ws_calls, ws_all As Worksheet
+
+Set wb = ThisWorkbook
+Set ws_calls = wb.Sheets("Data_Total")
+With ws_calls
+    For i = 2 To .Cells(100000, 1).End(xlUp).Row
+'        .Cells(i, 1).NumberFormat = "@"
+        If .Cells(i, 1).Value = "" Then
+            .Cells(i, 1).NumberFormat = "@"
+            .Cells(i, 2).NumberFormat = "@"
+            .Cells(i, 1).Value = .Cells(i - 1, 1).Value
+            .Cells(i, 2).Value = .Cells(i - 1, 2).Value
+        End If
+    Next i
+    For i = 2 To .Cells(10000, 1).End(xlUp).Row
+        .Cells(i, 4) = Application.WorksheetFunction.CountIf(.Range("A:A"), .Cells(i, 1).Value)
+'        .Cells(i, 4) = Application.WorksheetFunction.CountIf(.Cells(i, 1), .Columns(1))
+    Next i
+    .Cells(1, 4).Value = "NB_Repeats"
+    .Columns("A:D").Copy
+    .Columns("A:D").PasteSpecial xlValues
+'    .Columns(4).Copy
+'    .Columns(7).PasteSpecial
+    .Columns("A:D").RemoveDuplicates Columns:=Array(1, 2, 3, 4), Header:=xlYes
+
+End With
+End Sub
+Sub run_all()
+Application.DisplayAlerts = False
+Call get_sf_report1
+'Call get_sf_report2
+Call fill_values1
+'Call fill_values2
+Application.DisplayAlerts = True
+ThisWorkbook.Sheets("Dashboard").Select
+End Sub

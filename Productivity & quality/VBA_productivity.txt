@@ -1,0 +1,322 @@
+SF Report no: 00OR600000BZourMAD
+
+
+Option Explicit
+' ===========================================================
+' Módulo: Agent Productivity (transforma y exporta a .sql)
+' - Renombra columnas A:E -> E = "age"
+' - Mapea agent_id y department_id
+' - Fecha yyyy-mm-dd
+' - Errores de mapeo a hoja "mapping_errors"
+' - Exporta en INSERTs por bloques (<= 900)
+' - IDs no mapeados -> NULL (se genera el .sql igualmente)
+' - age: numérico tal cual; si vacío/no numérico -> NULL
+' ===========================================================
+
+Public Sub TransformAndExport_AgentProductivity()
+    Dim wsMain As Worksheet, wsAgent As Worksheet, wsDept As Worksheet, wsErr As Worksheet
+    Dim startRow As Long, lastRow As Long
+    Dim dictAgent As Object, dictDept As Object
+    Dim r As Long
+    Dim agentName As String, deptName As String
+    Dim agentId As Variant, deptId As Variant
+    Dim dt As Variant, dtStr As String
+    Dim caseNumText As String
+    Dim ageVal As Variant, sqlAge As String
+    Dim valuesInBlock As Long, totalRowsWritten As Long
+    Dim fNum As Integer, outPath As String
+    Const BLOCK_SIZE As Long = 900
+
+    Application.ScreenUpdating = False
+    On Error GoTo SafeExit
+
+    '-- Localiza hojas
+    Set wsAgent = SheetByNameLike("agent")
+    Set wsDept = SheetByNameLike("department")
+    Set wsMain = DetectMainSheet(Array("Date/Time Closed", "Case Owner", "Team", "Case Number"))
+    If wsAgent Is Nothing Or wsDept Is Nothing Or wsMain Is Nothing Then
+        Err.Raise vbObjectError + 1001, , "No se han encontrado las hojas necesarias (agent/department/datos)."
+    End If
+
+    '-- Encuentra fila de cabeceras
+    Dim hdrMain As Long, hdrAgent As Long, hdrDept As Long
+    hdrMain = FindHeaderRow(wsMain, Array("Date/Time Closed", "Case Owner", "Team", "Case Number"))
+    hdrAgent = FindHeaderRow(wsAgent, Array("agent_id", "agent_name"))
+    hdrDept = FindHeaderRow(wsDept, Array("department_id", "department_name"))
+    If hdrMain = 0 Or hdrAgent = 0 Or hdrDept = 0 Then
+        Err.Raise vbObjectError + 1002, , "No se localizaron cabeceras esperadas en alguna hoja."
+    End If
+
+    '-- Renombra A:E
+    wsMain.Cells(hdrMain, 1).Value = "Date"
+    wsMain.Cells(hdrMain, 2).Value = "agent_id"
+    wsMain.Cells(hdrMain, 3).Value = "department_id"
+    wsMain.Cells(hdrMain, 4).Value = "case_number"
+    wsMain.Cells(hdrMain, 5).Value = "age"   ' NUEVO
+
+    '-- Diccionarios de mapeo
+    Set dictAgent = CreateObject("Scripting.Dictionary")
+    Set dictDept = CreateObject("Scripting.Dictionary")
+    BuildMap dictAgent, wsAgent, hdrAgent, 1, 2 ' agent_id por agent_name
+    BuildMap dictDept, wsDept, hdrDept, 1, 2 ' department_id por department_name
+
+    '-- Hoja de errores
+    Set wsErr = PrepareErrorSheet
+
+    '-- Formato de fecha en A
+    wsMain.Columns(1).NumberFormat = "yyyy-mm-dd"
+
+    '-- Rango de datos
+    startRow = hdrMain + 1
+    lastRow = wsMain.Cells(wsMain.Rows.Count, 1).End(xlUp).Row
+    If lastRow < startRow Then GoTo ExportOnly
+
+    '-- Salida
+    outPath = GetDownloadsPath() & "\agent_productivity_" & Format(Now, "yyyymmdd_hhnnss") & ".sql"
+    fNum = FreeFile
+    Open outPath For Output As #fNum
+
+    Dim openedBlock As Boolean
+    openedBlock = False
+    valuesInBlock = 0: totalRowsWritten = 0
+
+    '-- Bucle principal
+    For r = startRow To lastRow
+    On Error Resume Next
+        ' Fecha -> dtStr
+        dt = wsMain.Cells(r, 1).Value
+        dtStr = ""
+        If IsDate(dt) Then
+            dtStr = Format(CDate(dt), "yyyy-mm-dd")
+        ElseIf Len(Trim$(wsMain.Cells(r, 1).Text)) > 0 Then
+            On Error Resume Next
+            dtStr = Format(CDate(wsMain.Cells(r, 1).Text), "yyyy-mm-dd")
+            On Error GoTo 0
+            If Len(dtStr) = 0 Then LogError wsErr, r, "Date", wsMain.Cells(r, 1).Text, "Fecha no válida -> NULL"
+        End If
+
+        ' Mapeos por nombre (B y C)
+        agentName = Trim$(wsMain.Cells(r, 2).Text)
+        deptName = Trim$(wsMain.Cells(r, 3).Text)
+
+        agentId = NullIfMissing(LookupId(dictAgent, agentName))
+        If IsNull(agentId) And Len(agentName) > 0 Then
+            LogError wsErr, r, "agent_id", agentName, "Sin mapeo en 'agent' -> NULL"
+        End If
+
+        deptId = NullIfMissing(LookupId(dictDept, deptName))
+        If IsNull(deptId) And Len(deptName) > 0 Then
+            LogError wsErr, r, "department_id", deptName, "Sin mapeo en 'department' -> NULL"
+        End If
+
+        ' Escribe IDs de vuelta (como ya hacía tu macro)
+        If Not IsNull(agentId) Then wsMain.Cells(r, 2).Value = CLng(agentId) Else wsMain.Cells(r, 2).Value = ""
+        If Not IsNull(deptId) Then wsMain.Cells(r, 3).Value = CLng(deptId) Else wsMain.Cells(r, 3).Value = ""
+
+        ' case_number como texto
+        caseNumText = Trim$(wsMain.Cells(r, 4).Text)
+        If Len(caseNumText) = 0 Then
+            LogError wsErr, r, "case_number", "", "Vacío -> NULL"
+        End If
+
+        ' age: numérico tal cual; si vacío/no numérico -> NULL
+        ageVal = wsMain.Cells(r, 5).Value
+        If Len(Trim$(wsMain.Cells(r, 5).Text)) = 0 Then
+            sqlAge = "NULL"
+        ElseIf IsNumeric(ageVal) Then
+            sqlAge = CStr(CDbl(ageVal)) ' evita formato científico
+        Else
+            sqlAge = "NULL"
+            LogError wsErr, r, "age", wsMain.Cells(r, 5).Text, "No numérico -> NULL"
+        End If
+
+        ' Tupla SQL
+        Dim sqlDate As String, sqlAgent As String, sqlDept As String, sqlCase As String, tuple As String
+        sqlDate = IIf(Len(dtStr) > 0, "'" & dtStr & "'", "NULL")
+        sqlAgent = IIf(IsNull(agentId), "NULL", CStr(CLng(agentId)))
+        sqlDept = IIf(IsNull(deptId), "NULL", CStr(CLng(deptId)))
+        sqlCase = IIf(Len(caseNumText) > 0, "'" & Replace(caseNumText, "'", "''") & "'", "NULL")
+
+        tuple = "(" & sqlDate & ", " & sqlAgent & ", " & sqlDept & ", " & sqlCase & ", " & sqlAge & ")"
+
+        ' Inserción por bloques
+        If Not openedBlock Then
+            Print #fNum, "INSERT INTO CustomerService.agent_productivity (Date, agent_id, department_id, case_number, age) VALUES"
+            openedBlock = True
+            valuesInBlock = 0
+        End If
+        If valuesInBlock > 0 Then Print #fNum, ","
+        Print #fNum, " " & tuple;
+        valuesInBlock = valuesInBlock + 1
+        totalRowsWritten = totalRowsWritten + 1
+
+        If valuesInBlock >= BLOCK_SIZE Then
+            Print #fNum, ";"
+            openedBlock = False
+        End If
+    
+    If Err.Number <> 0 Then
+        LogError wsErr, r, "General", "Error inesperado", "Descripción: " & Err.Description
+        Err.Clear
+    End If
+    On Error GoTo 0
+Next r
+
+    If openedBlock Then Print #fNum, ";"
+
+ExportOnly:
+    Close #fNum
+    Application.ScreenUpdating = True
+    MsgBox "Hecho." & vbCrLf & _
+           "Filas exportadas: " & totalRowsWritten & vbCrLf & _
+           "Archivo SQL: " & outPath & vbCrLf & _
+           "Revisar hoja 'mapping_errors' para mapeos no resueltos.", vbInformation
+    Exit Sub
+
+SafeExit:
+    On Error Resume Next
+    If fNum <> 0 Then Close #fNum
+    Application.ScreenUpdating = True
+    MsgBox "Se produjo un error: " & Err.Description, vbExclamation
+End Sub
+
+' ==================== UTILIDADES (todas Public) ====================
+
+Public Function SheetByNameLike(ByVal key As String) As Worksheet
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        If LCase$(ws.Name) = LCase$(key) Then
+            Set SheetByNameLike = ws
+            Exit Function
+        End If
+    Next ws
+    For Each ws In ThisWorkbook.Worksheets
+        If InStr(1, LCase$(ws.Name), LCase$(key), vbTextCompare) > 0 Then
+            Set SheetByNameLike = ws
+            Exit Function
+        End If
+    Next ws
+End Function
+
+Public Function DetectMainSheet(expectedHeaders As Variant) As Worksheet
+    Dim ws As Worksheet, r As Long
+    For Each ws In ThisWorkbook.Worksheets
+        If LCase$(ws.Name) <> "agent" And LCase$(ws.Name) <> "department" Then
+            For r = 1 To 10
+                If CellsMatchHeaders(ws, r, expectedHeaders) Then
+                    Set DetectMainSheet = ws
+                    Exit Function
+                End If
+            Next r
+        End If
+    Next ws
+    ' Fallback: primera hoja que no sea agent/department
+    For Each ws In ThisWorkbook.Worksheets
+        If LCase$(ws.Name) <> "agent" And LCase$(ws.Name) <> "department" Then
+            Set DetectMainSheet = ws
+            Exit Function
+        End If
+    Next ws
+End Function
+
+Public Function CellsMatchHeaders(ws As Worksheet, headerRow As Long, expectedHeaders As Variant) As Boolean
+    Dim i As Long
+    CellsMatchHeaders = True
+    For i = LBound(expectedHeaders) To UBound(expectedHeaders)
+        If Trim$(CStr(ws.Cells(headerRow, i + 1).Value)) <> CStr(expectedHeaders(i)) Then
+            CellsMatchHeaders = False
+            Exit Function
+        End If
+    Next i
+End Function
+
+Public Function FindHeaderRow(ws As Worksheet, headers As Variant) As Long
+    Dim r As Long
+    For r = 1 To 20
+        If CellsMatchHeaders(ws, r, headers) Then
+            FindHeaderRow = r
+            Exit Function
+        End If
+    Next r
+    FindHeaderRow = 0
+End Function
+
+Public Sub BuildMap(ByRef dict As Object, ws As Worksheet, hdr As Long, idCol As Long, nameCol As Long)
+    Dim lastRow As Long, i As Long
+    Dim k As String, v As Variant
+    lastRow = ws.Cells(ws.Rows.Count, idCol).End(xlUp).Row
+    For i = hdr + 1 To lastRow
+        v = ws.Cells(i, idCol).Value
+        k = NormalizeKey(CStr(ws.Cells(i, nameCol).Value))
+        If Len(k) > 0 Then
+            If Not dict.Exists(k) Then dict.Add k, v
+        End If
+    Next i
+End Sub
+
+Public Function NormalizeKey(ByVal s As String) As String
+    s = Trim$(s)
+    s = Replace$(s, "'", "")
+    s = Replace$(s, """", "")
+    s = Replace$(s, ChrW(8217), "")   ' apóstrofe tipográfico
+    s = Replace$(s, "-", " ")
+    s = Replace$(s, "\", "_")
+    s = Application.WorksheetFunction.Trim(s) ' compacta espacios
+    NormalizeKey = UCase$(s)
+End Function
+
+Public Function LookupId(dict As Object, nameValue As String) As Variant
+    Dim k As String
+    k = NormalizeKey(nameValue)
+    If dict.Exists(k) Then
+        LookupId = dict(k)
+    Else
+        LookupId = CVErr(xlErrNA)
+    End If
+End Function
+
+Public Function NullIfMissing(v As Variant) As Variant
+    If IsError(v) Then
+        NullIfMissing = Null
+    Else
+        NullIfMissing = v
+    End If
+End Function
+
+Public Function PrepareErrorSheet() As Worksheet
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("mapping_errors")
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        ws.Name = "mapping_errors"
+    Else
+        ws.Cells.Clear
+    End If
+    ws.Range("A1:D1").Value = Array("row", "column", "value", "note")
+    ws.Rows(1).Font.Bold = True
+    Set PrepareErrorSheet = ws
+End Function
+
+Public Sub LogError(wsErr As Worksheet, ByVal rowNum As Long, ByVal colName As String, ByVal valText As String, ByVal note As String)
+    With wsErr
+        Dim nr As Long
+        nr = .Cells(.Rows.Count, 1).End(xlUp).Row + 1
+        .Cells(nr, 1).Value = rowNum
+        .Cells(nr, 2).Value = colName
+        .Cells(nr, 3).Value = valText
+        .Cells(nr, 4).Value = note
+    End With
+End Sub
+
+Public Function GetDownloadsPath() As String
+    Dim p As String
+    p = Environ$("USERPROFILE")
+    If Len(p) > 0 Then
+        GetDownloadsPath = p & "\Downloads"
+    Else
+        GetDownloadsPath = ThisWorkbook.Path
+    End If
+End Function
+
