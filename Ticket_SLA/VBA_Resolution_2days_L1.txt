@@ -1,0 +1,235 @@
+Report No. 00OR6000004AYMHMA4
+
+Option Explicit
+
+Sub Export_Resolution_SLA_SQL()
+    Dim wb As Workbook: Set wb = ThisWorkbook
+    Dim wsMain As Worksheet, wsAgent As Worksheet, wsDept As Worksheet
+    
+    On Error GoTo ErrHandler
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    
+    ' --- Hojas fuente ---
+    Set wsMain = wb.Worksheets("Main")
+    Set wsAgent = wb.Worksheets("agent")
+    Set wsDept = wb.Worksheets("department")
+    
+    ' --- Parámetro: renombrar encabezados en hoja Main (no toca datos) ---
+    Const RENAME_HEADERS As Boolean = True
+    If RENAME_HEADERS Then
+        wsMain.Range("A1").Value = "Date"
+        wsMain.Range("B1").Value = "department_id"
+        wsMain.Range("C1").Value = "case_number"
+        wsMain.Range("D1").Value = "agent_id"
+        wsMain.Range("E1").Value = "case_subreason"
+        wsMain.Range("F1").Value = "age"
+        wsMain.Range("G1").Value = "resolution_sla"
+    End If
+    
+    ' --- Diccionarios de mapeo ---
+    Dim dictAgent As Object, dictDept As Object
+    Set dictAgent = CreateObject("Scripting.Dictionary")
+    Set dictDept = CreateObject("Scripting.Dictionary")
+    
+    Dim lastRow As Long, i As Long
+    Dim key As String, val As Variant
+    
+    ' agent! A=id, B=agent_name
+    lastRow = wsAgent.Cells(wsAgent.Rows.Count, "A").End(xlUp).Row
+    For i = 2 To lastRow
+        key = Trim(CStr(wsAgent.Cells(i, "B").Value))
+        val = wsAgent.Cells(i, "A").Value
+        If Len(key) > 0 Then If Not dictAgent.Exists(key) Then dictAgent.Add key, val
+    Next i
+    
+    ' department! A=id, B=department_name
+    lastRow = wsDept.Cells(wsDept.Rows.Count, "A").End(xlUp).Row
+    For i = 2 To lastRow
+        key = Trim(CStr(wsDept.Cells(i, "B").Value))
+        val = wsDept.Cells(i, "A").Value
+        If Len(key) > 0 Then If Not dictDept.Exists(key) Then dictDept.Add key, val
+    Next i
+    
+    ' --- Datos de Main ---
+    Dim lastRowMain As Long
+    lastRowMain = wsMain.Cells(wsMain.Rows.Count, "A").End(xlUp).Row
+    If lastRowMain < 2 Then Err.Raise 5, , "No hay filas de datos en Main."
+    
+    Dim data As Variant
+    data = wsMain.Range("A2:G" & lastRowMain).Value  ' A:Date/Time Opened, B:Team, C:Case Number, D:Case Owner, E:Case Sub-Reason, F:Age (Days), G:Resolution_SLA
+    
+    ' --- Construcción del SQL ---
+    Const MAX_ROWS As Long = 900
+    Dim sb As String
+    Dim rowsInBlock As Long, totalRows As Long
+    Dim blocks As Long, missingAgents As Long, missingDepts As Long
+    
+    Dim r As Long
+    For r = 1 To UBound(data, 1)
+        Dim vDate As String, vDeptId As String, vCase As String, vAgentId As String
+        Dim vSub As String, vAge As String, vSLA As String
+        
+        vDate = FormatDateForSQL(data(r, 1))                     ' Date/Time Opened
+        vDeptId = MapIdForSQL(dictDept, data(r, 2), missingDepts) ' Team
+        vCase = QuoteTextOrNull(data(r, 3))                      ' Case Number (texto)
+        vAgentId = MapIdForSQL(dictAgent, data(r, 4), missingAgents) ' Case Owner
+        vSub = QuoteTextOrNull(data(r, 5))                       ' Case Sub-Reason (texto)
+        vAge = NumberOrNull(data(r, 6))                          ' Age (Days)
+        vSLA = Boolean01OrNull(data(r, 7))                       ' Resolution_SLA
+        
+        ' Arranca bloque si es la primera fila del bloque
+        If rowsInBlock = 0 Then
+            sb = sb & "INSERT INTO CustomerService.resolution_sla " & _
+                      "([Date], [department_id], [case_number], [agent_id], [case_subreason], [age], [resolution_sla]) VALUES" & vbCrLf
+        Else
+            sb = sb & "," & vbCrLf
+        End If
+        
+        sb = sb & "(" & vDate & ", " & vDeptId & ", " & vCase & ", " & vAgentId & ", " & vSub & ", " & vAge & ", " & vSLA & ")"
+        
+        rowsInBlock = rowsInBlock + 1
+        totalRows = totalRows + 1
+        
+        If rowsInBlock = MAX_ROWS Then
+            sb = sb & ";" & vbCrLf & vbCrLf
+            rowsInBlock = 0
+            blocks = blocks + 1
+        End If
+    Next r
+    
+    If rowsInBlock > 0 Then
+        sb = sb & ";" & vbCrLf
+        blocks = blocks + 1
+    End If
+    
+    ' --- Guardar archivo en Downloads (UTF-8) ---
+    Dim downloadsPath As String
+    downloadsPath = GetDownloadsPath()
+    If Len(downloadsPath) = 0 Then downloadsPath = ThisWorkbook.Path
+    
+    Dim fileName As String, fullPath As String
+    fileName = "CustomerService_resolution_sla_" & Format(Now, "yyyymmdd_HhNnSs") & ".sql"
+    fullPath = downloadsPath & Application.PathSeparator & fileName
+    
+    WriteUtf8TextFile fullPath, sb
+    
+    ' --- Aviso final ---
+    Dim msg As String
+    msg = "Archivo SQL generado:" & vbCrLf & fullPath & vbCrLf & vbCrLf & _
+          "Filas exportadas: " & totalRows & vbCrLf & _
+          "Bloques INSERT (=900 filas): " & blocks & vbCrLf & _
+          "Agents no mapeados ? NULL: " & missingAgents & vbCrLf & _
+          "Departments no mapeados ? NULL: " & missingDepts
+    MsgBox msg, vbInformation, "Exportación completada"
+    
+CleanExit:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error: " & Err.Description, vbExclamation, "Export_Resolution_SLA_SQL"
+    Resume CleanExit
+End Sub
+
+'================= Helpers =================
+
+Private Function GetDownloadsPath() As String
+    On Error Resume Next
+    Dim sh As Object
+    Set sh = CreateObject("WScript.Shell")
+    Dim p As String
+    p = sh.ExpandEnvironmentStrings("%USERPROFILE%\Downloads")
+    If Len(Dir(p, vbDirectory)) > 0 Then
+        GetDownloadsPath = p
+    Else
+        GetDownloadsPath = "" ' fallback se maneja fuera
+    End If
+End Function
+
+Private Sub WriteUtf8TextFile(ByVal fullPath As String, ByVal content As String)
+    ' Guardar como UTF-8 con ADODB.Stream
+    Dim stm As Object
+    Set stm = CreateObject("ADODB.Stream")
+    stm.Type = 2 ' adTypeText
+    stm.Charset = "utf-8"
+    stm.Open
+    stm.WriteText content
+    stm.SaveToFile fullPath, 2 ' adSaveCreateOverWrite
+    stm.Close
+End Sub
+
+Private Function FormatDateForSQL(ByVal v As Variant) As String
+    Dim s As String
+    If IsDate(v) Then
+        FormatDateForSQL = "'" & Format$(CDate(v), "yyyy-mm-dd") & "'"
+    Else
+        s = Trim$(CStr(v))
+        If s = "" Or s = "-" Then
+            FormatDateForSQL = "NULL"
+        ElseIf IsDate(s) Then
+            FormatDateForSQL = "'" & Format$(CDate(s), "yyyy-mm-dd") & "'"
+        Else
+            FormatDateForSQL = "NULL"
+        End If
+    End If
+End Function
+
+Private Function QuoteTextOrNull(ByVal v As Variant) As String
+    Dim s As String
+    s = Trim$(CStr(v))
+    If s = "" Or s = "-" Then
+        QuoteTextOrNull = "NULL"
+    Else
+        s = Replace$(s, "'", "''")
+        QuoteTextOrNull = "'" & s & "'"
+    End If
+End Function
+
+Private Function NumberOrNull(ByVal v As Variant) As String
+    Dim s As String
+    If IsNumeric(v) Then
+        NumberOrNull = CStr(CLng(v))
+    Else
+        s = Trim$(CStr(v))
+        If s = "" Or s = "-" Then
+            NumberOrNull = "NULL"
+        ElseIf IsNumeric(s) Then
+            NumberOrNull = CStr(CLng(s))
+        Else
+            NumberOrNull = "NULL"
+        End If
+    End If
+End Function
+
+Private Function Boolean01OrNull(ByVal v As Variant) As String
+    Dim s As String
+    s = Trim$(CStr(v))
+    If s = "" Or s = "-" Then
+        Boolean01OrNull = "NULL"
+    ElseIf s = "0" Or s = "1" Then
+        Boolean01OrNull = s
+    ElseIf IsNumeric(s) Then
+        Boolean01OrNull = IIf(CDbl(s) <> 0, "1", "0")
+    Else
+        Boolean01OrNull = "NULL"
+    End If
+End Function
+
+Private Function MapIdForSQL(ByVal dict As Object, ByVal keyVal As Variant, ByRef missingCounter As Long) As String
+    Dim k As String
+    k = Trim$(CStr(keyVal))
+    If k = "" Or k = "-" Then
+        MapIdForSQL = "NULL"
+    ElseIf dict.Exists(k) Then
+        MapIdForSQL = CStr(dict(k))
+    Else
+        missingCounter = missingCounter + 1
+        MapIdForSQL = "NULL"
+    End If
+End Function
+
+
