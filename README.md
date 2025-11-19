@@ -1,4 +1,4 @@
-###CustomerService Data Warehouse (SQL Server)
+### CustomerService Data Warehouse (SQL Server)
 This repository contains the database script SQL_database_CS.sql to create the analytical schema for CustomerService (SQL Server/T‑SQL), including all tables and over 30 views for operational and customer experience metrics.
 
 Scope: Payments, Partners, Hospitality / customer support. Key metrics: ASA, AHT, SLA, ABA (Abandonment), agent productivity, RR (Repeat Rate), VoC (NPS/CSAT/NES), transfers, and quality.
@@ -9,7 +9,7 @@ Scope: Payments, Partners, Hospitality / customer support. Key metrics: ASA, AHT
 └── README.md             # This document
 └── data&macros           # Excel macros to convert SF reports into SQL Server
 
-🗃️ Schema & Objects
+🗃️ ## Schema & Objects
 
 Schema: CustomerService (and APP_FLOW.CustomerService for paid sources/ingestion)
 Main tables (summary):
