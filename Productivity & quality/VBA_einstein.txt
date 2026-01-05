@@ -1,0 +1,83 @@
+SF Report no: 00OR600000BiKBBMA3
+
+Sub ExportSingleInsertSQL()
+    Dim wsMain As Worksheet, wsEmail As Worksheet, wsAgent As Worksheet
+    Dim lastRow As Long, sqlFile As Integer, i As Long
+    Dim outputPath As String
+    Dim emailDict As Object, agentDict As Object
+    Dim rowValues As String
+    Dim dateVal As String, caseNumber As String, agentID As String
+    Dim caseReason As String, subreason As String, resolutionReason As String
+    Dim supportID As String, reopenedVal As String
+    Dim downloadsPath As String
+
+    Set wsMain = ThisWorkbook.Sheets("Main")
+    Set wsEmail = ThisWorkbook.Sheets("email")
+    Set wsAgent = ThisWorkbook.Sheets("agent")
+    Set emailDict = CreateObject("Scripting.Dictionary")
+    Set agentDict = CreateObject("Scripting.Dictionary")
+
+    ' Diccionario de email
+    For i = 2 To wsEmail.Cells(wsEmail.Rows.Count, 1).End(xlUp).Row
+        emailDict(wsEmail.Cells(i, 2).Text) = wsEmail.Cells(i, 1).Value
+    Next i
+
+    ' Diccionario de agente
+    For i = 2 To wsAgent.Cells(wsAgent.Rows.Count, 1).End(xlUp).Row
+        agentDict(wsAgent.Cells(i, 2).Text) = wsAgent.Cells(i, 1).Value
+    Next i
+
+    lastRow = wsMain.Cells(wsMain.Rows.Count, 1).End(xlUp).Row
+
+    ' Ruta a la carpeta Descargas del usuario
+    downloadsPath = CreateObject("WScript.Shell").SpecialFolders("MyDocuments")
+    downloadsPath = Replace(downloadsPath, "Documents", "Downloads")
+    outputPath = downloadsPath & "\exported_data.sql"
+
+    sqlFile = FreeFile
+    Open outputPath For Output As #sqlFile
+    Print #sqlFile, "INSERT INTO CustomerService.einstein_cases (Date, case_number, agent_id, case_reason, subreason, resolution_reason, support_email_id, reopened) VALUES"
+
+    For i = 2 To lastRow
+        If IsDate(wsMain.Cells(i, 1).Value) Then
+            dateVal = "'" & Format(wsMain.Cells(i, 1).Value, "yyyy-mm-dd") & "'"
+        Else
+            dateVal = "NULL"
+        End If
+
+        caseNumber = "'" & Replace(wsMain.Cells(i, 2).Text, "'", "''") & "'"
+
+        If agentDict.exists(wsMain.Cells(i, 3).Text) Then
+            agentID = agentDict(wsMain.Cells(i, 3).Text)
+        Else
+            agentID = "NULL"
+        End If
+
+        caseReason = "'" & Replace(wsMain.Cells(i, 4).Text, "'", "''") & "'"
+        subreason = "'" & Replace(wsMain.Cells(i, 5).Text, "'", "''") & "'"
+        resolutionReason = "'" & Replace(wsMain.Cells(i, 6).Text, "'", "''") & "'"
+
+        If emailDict.exists(wsMain.Cells(i, 7).Text) Then
+            supportID = emailDict(wsMain.Cells(i, 7).Text)
+        Else
+            supportID = "NULL"
+        End If
+
+        Select Case UCase(Trim(wsMain.Cells(i, 8).Text))
+            Case "TRUE": reopenedVal = "1"
+            Case "FALSE": reopenedVal = "0"
+            Case Else: reopenedVal = "NULL"
+        End Select
+
+        rowValues = "(" & dateVal & ", " & caseNumber & ", " & agentID & ", " & caseReason & ", " & subreason & ", " & resolutionReason & ", " & supportID & ", " & reopenedVal & ")"
+
+        If i < lastRow Then
+            Print #sqlFile, rowValues & ","
+        Else
+            Print #sqlFile, rowValues & ";"
+        End If
+    Next i
+
+    Close #sqlFile
+    MsgBox "Archivo SQL exportado exitosamente a: " & outputPath
+End Sub

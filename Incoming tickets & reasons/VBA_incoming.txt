@@ -1,0 +1,184 @@
+SF Report no: 00OR60000063JYvMAM
+
+Option Explicit
+
+' =======================
+' Punto de entrada (asignar al botón)
+' Genera 1 solo INSERT INTO con múltiples VALUES
+' =======================
+Public Sub Generar_Incoming_SQL()
+    Dim ws As Worksheet
+    Dim lastRow As Long, r As Long
+    Dim stopMarker As String
+    Dim sqlText As String
+    Dim wroteAny As Boolean
+    Dim recCount As Long
+    
+    On Error GoTo SafeExit
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    
+    Set ws = ThisWorkbook.Worksheets("Main")
+    stopMarker = "Date/Time Opened" ' marcador donde empieza otra tabla en Main
+    
+    ' 1) Mapear nombres -> IDs en Main!B
+    Call MapDepartmentNamesToIDs
+    
+    ' 2) Recorrer filas de la tabla principal y construir UN SOLO INSERT
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    
+    sqlText = "INSERT INTO CustomerService.incoming_tickets ([Date],[department_id],[ticket_total]) VALUES" & vbCrLf
+    wroteAny = False
+    
+    For r = 2 To lastRow
+        ' Parar si aparece el rótulo de otra tabla
+        If CStr(ws.Cells(r, "A").Value) = stopMarker Then Exit For
+        
+        ' Solo procesar si la columna A tiene fecha válida
+        If IsDate(ws.Cells(r, "A").Value) Then
+            Dim dtSql As String, depSql As String, totSql As String
+            Dim tupleSql As String
+            
+            ' Fecha 'YYYY-MM-DD'
+            dtSql = "'" & Format(CDate(ws.Cells(r, "A").Value), "yyyy-mm-dd") & "'"
+            
+            ' department_id -> numérico o NULL
+            depSql = SqlValue_DepartmentID(ws.Cells(r, "B").Value)
+            
+            ' ticket_total -> numérico o NULL (robustez)
+            If IsNumeric(ws.Cells(r, "C").Value) Then
+                totSql = CStr(CLng(ws.Cells(r, "C").Value))
+            Else
+                totSql = "NULL"
+            End If
+            
+            tupleSql = "(" & dtSql & ", " & depSql & ", " & totSql & ")"
+            
+            If wroteAny Then
+                sqlText = sqlText & "," & vbCrLf & tupleSql
+            Else
+                sqlText = sqlText & tupleSql
+                wroteAny = True
+            End If
+            
+            recCount = recCount + 1
+        End If
+    Next r
+    
+    ' Si hay filas, cierra con ';' y guarda; si no, avisa
+    If wroteAny Then
+        sqlText = sqlText & ";" & vbCrLf
+        Call SaveSqlToDownloads(sqlText, recCount)
+    Else
+        MsgBox "No se han encontrado filas válidas para exportar (no hay fechas en A o está vacía la tabla).", _
+               vbExclamation, "CustomerService.incoming"
+    End If
+    
+SafeExit:
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+End Sub
+
+
+' =======================
+' Guarda el .sql en Downloads
+' =======================
+Private Sub SaveSqlToDownloads(ByVal sqlText As String, ByVal recCount As Long)
+    Dim outPath As String, outFile As String, ff As Integer
+    
+    outPath = GetDownloadsPath()
+    outFile = outPath & Application.PathSeparator & "incoming_" & Format(Now, "yyyymmdd_HHMMss") & ".sql"
+    
+    ff = FreeFile
+    Open outFile For Output As #ff
+    Print #ff, sqlText;
+    Close #ff
+    
+    MsgBox "Archivo .sql generado correctamente:" & vbCrLf & outFile & vbCrLf & _
+           "Filas exportadas: " & recCount & vbCrLf & _
+           "Formato: un único INSERT INTO con múltiples VALUES.", _
+           vbInformation, "CustomerService.incoming"
+End Sub
+
+
+' =======================
+' Mapeo de nombres -> IDs en Main!B (no toca si no hay match)
+' =======================
+Private Sub MapDepartmentNamesToIDs()
+    Dim wsMain As Worksheet, wsDept As Worksheet
+    Dim lastRowDept As Long, lastRowMain As Long
+    Dim dict As Object
+    Dim r As Long, rDept As Long
+    Dim deptName As String, deptID As Variant
+    Dim stopMarker As String
+    
+    Set wsMain = ThisWorkbook.Worksheets("Main")
+    Set wsDept = ThisWorkbook.Worksheets("department")
+    Set dict = CreateObject("Scripting.Dictionary")
+    dict.CompareMode = 1 ' TextCompare (case-insensitive)
+    
+    ' Construir diccionario: department_name -> department_id
+    lastRowDept = wsDept.Cells(wsDept.Rows.Count, "A").End(xlUp).Row
+    For rDept = 2 To lastRowDept
+        deptName = Trim(CStr(wsDept.Cells(rDept, "B").Value)) ' department_name
+        deptID = wsDept.Cells(rDept, "A").Value               ' department_id
+        If Len(deptName) > 0 And IsNumeric(deptID) Then
+            dict(deptName) = CLng(deptID)
+        End If
+    Next rDept
+    
+    ' Actualizar columna B de "Main" (nombres -> IDs cuando haya match)
+    lastRowMain = wsMain.Cells(wsMain.Rows.Count, "B").End(xlUp).Row
+    stopMarker = "Date/Time Opened"
+    
+    For r = 2 To lastRowMain
+        If CStr(wsMain.Cells(r, "A").Value) = stopMarker Then Exit For
+        
+        Dim curVal As Variant
+        curVal = wsMain.Cells(r, "B").Value
+        
+        ' Si ya es numérico, no tocar
+        If IsNumeric(curVal) Then GoTo ContinueNext
+        
+        deptName = Trim(CStr(curVal))
+        If Len(deptName) > 0 Then
+            If dict.Exists(deptName) Then
+                wsMain.Cells(r, "B").Value = dict(deptName)
+                wsMain.Cells(r, "B").NumberFormat = "0"
+            End If
+            ' Si no existe, no hay cambio (se queda el nombre; más tarde exporta NULL)
+        End If
+ContinueNext:
+    Next r
+End Sub
+
+
+' =======================
+' Formatea el department_id para SQL (NULL si no es numérico)
+' =======================
+Private Function SqlValue_DepartmentID(ByVal v As Variant) As String
+    If Len(Trim(CStr(v))) = 0 Then
+        SqlValue_DepartmentID = "NULL"
+    ElseIf IsNumeric(v) Then
+        SqlValue_DepartmentID = CStr(CLng(v))
+    Else
+        ' Si quedó texto (no mapeado), exportar como NULL
+        SqlValue_DepartmentID = "NULL"
+    End If
+End Function
+
+
+' =======================
+' Obtiene la carpeta Downloads del usuario
+' (si no existe, usa la carpeta del libro)
+' =======================
+Private Function GetDownloadsPath() As String
+    Dim p As String
+    p = Environ$("USERPROFILE") & "\Downloads"
+    If Len(Dir$(p, vbDirectory)) > 0 Then
+        GetDownloadsPath = p
+    Else
+        GetDownloadsPath = ThisWorkbook.Path
+    End If
+End Function
+

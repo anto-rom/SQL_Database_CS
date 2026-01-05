@@ -1,0 +1,285 @@
+SF report no: 00OR600000AWEA9MAP
+
+Option Explicit
+
+Public Sub ExportSurveysSentToSQL()
+    Const MAX_ROWS_PER_BLOCK As Long = 900
+    Dim ws As Worksheet, wsDept As Worksheet
+    Dim lastRow As Long, i As Long
+    Dim downloadsPath As String, outFile As String
+    Dim sb As String, valuesBlock As String, lineVal As String
+    Dim dictDept As Object
+    Dim idCol As Long, nameCol As Long, deptLastRow As Long
+    Dim dateStr As String, deptOut As Variant
+    Dim caseNum As Variant, accName As String, managedOut As String
+    Dim emptyRow As Boolean, added As Long, misses As Long
+    Dim unmatched As Collection
+    Dim blockRowCount As Long, blockCount As Long
+
+    On Error GoTo fail
+    Set ws = ThisWorkbook.Worksheets("Main")
+    Set wsDept = ThisWorkbook.Worksheets("department")
+    Set unmatched = New Collection
+
+    ws.Cells(1, 1).Value = "Date"
+    ws.Cells(1, 2).Value = "department_id"
+    ws.Cells(1, 3).Value = "case_number"
+    ws.Cells(1, 4).Value = "account_name"
+    ws.Cells(1, 5).Value = "managed_account"
+
+    Set dictDept = CreateObject("Scripting.Dictionary")
+    dictDept.CompareMode = 1
+    idCol = 1
+    nameCol = FindHeaderColumn(wsDept, "department_name")
+    If nameCol = 0 Then nameCol = 2
+    deptLastRow = wsDept.Cells(wsDept.Rows.Count, idCol).End(xlUp).Row
+    For i = 2 To deptLastRow
+        Dim nm As String, did As Variant
+        nm = Trim$(CStr(wsDept.Cells(i, nameCol).Value))
+        did = wsDept.Cells(i, idCol).Value
+        If Len(nm) > 0 Then
+            If Not dictDept.Exists(UCase$(nm)) Then dictDept.Add UCase$(nm), did
+        End If
+    Next i
+
+    lastRow = LastDataRow(ws, 1, 3)
+    If lastRow < 2 Then
+        MsgBox "No hay datos en 'Main'.", vbExclamation
+        Exit Sub
+    End If
+
+    sb = ""
+    valuesBlock = ""
+    added = 0: misses = 0: blockRowCount = 0: blockCount = 0
+
+    For i = 2 To lastRow
+        emptyRow = IsRowEmpty(ws, i, 1, 5)
+        If Not emptyRow Then
+            dateStr = ToSQLDate(ws.Cells(i, 1).Value)
+            deptOut = ResolveDepartment(ws.Cells(i, 2).Value, dictDept, unmatched)
+            If IsError(deptOut) Then
+                deptOut = Null
+                misses = misses + 1
+            End If
+            caseNum = ws.Cells(i, 3).Value
+            If Trim$(CStr(caseNum)) = "" Or Not IsNumeric(caseNum) Then
+                caseNum = Null
+            End If
+            accName = CStr(ws.Cells(i, 4).Value)
+            managedOut = ToBitOrNull(ws.Cells(i, 5).Value)
+
+            lineVal = "(" & _
+                IIf(Len(dateStr) > 0, "'" & dateStr & "'", "NULL") & "," & _
+                ToSQLNumberOrNull(deptOut) & "," & _
+                ToSQLNumberOrNull(caseNum) & "," & _
+                ToSQLNVarCharOrNull(accName) & "," & _
+                managedOut & ")"
+
+            If blockRowCount > 0 Then
+                valuesBlock = valuesBlock & "," & vbCrLf & lineVal
+            Else
+                valuesBlock = lineVal
+            End If
+
+            blockRowCount = blockRowCount + 1
+            added = added + 1
+
+            If blockRowCount = MAX_ROWS_PER_BLOCK Then
+                sb = sb & "INSERT INTO [CustomerService].[surveys_sent] ([Date],[department_id],[case_number],[account_name],[managed_account])" & vbCrLf & _
+                     "VALUES" & vbCrLf & valuesBlock & ";" & vbCrLf & vbCrLf
+                valuesBlock = ""
+                blockRowCount = 0
+                blockCount = blockCount + 1
+            End If
+        End If
+    Next i
+
+    If blockRowCount > 0 Then
+        sb = sb & "INSERT INTO [CustomerService].[surveys_sent] ([Date],[department_id],[case_number],[account_name],[managed_account])" & vbCrLf & _
+             "VALUES" & vbCrLf & valuesBlock & ";" & vbCrLf
+        blockCount = blockCount + 1
+    End If
+
+    downloadsPath = GetDownloadsPath()
+    outFile = downloadsPath & "surveys_sent_" & Format(Now, "yyyymmdd_HhNnSs") & ".sql"
+    WriteUtf8File outFile, sb
+
+    Dim msg As String
+    msg = "Export completado." & vbCrLf & _
+          "Filas exportadas: " & added & vbCrLf & _
+          "Departamentos no mapeados: " & misses & vbCrLf & _
+          "Bloques generados: " & blockCount & vbCrLf & _
+          "Archivo: " & outFile
+    MsgBox msg, vbInformation, "surveys_sent ? SQL"
+
+    If misses > 0 Then DumpUnmatched unmatched
+    Exit Sub
+
+fail:
+    MsgBox "Error: " & Err.Number & " - " & Err.Description, vbCritical, "ExportSurveysSentToSQL"
+End Sub
+
+' === Helpers ===
+
+Private Function FindHeaderColumn(ws As Worksheet, headerText As String) As Long
+    Dim lastCol As Long, c As Long
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        If LCase$(Trim$(CStr(ws.Cells(1, c).Value))) = LCase$(headerText) Then
+            FindHeaderColumn = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderColumn = 0
+End Function
+
+Private Function LastDataRow(ws As Worksheet, ParamArray preferCols() As Variant) As Long
+    Dim i As Long, col As Long, lr As Long, maxLr As Long
+    For i = LBound(preferCols) To UBound(preferCols)
+        col = CLng(preferCols(i))
+        lr = ws.Cells(ws.Rows.Count, col).End(xlUp).Row
+        If lr > maxLr Then maxLr = lr
+    Next i
+    If maxLr < 2 Then
+        Dim f As Range
+        Set f = ws.Cells.Find("*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+            LookAt:=xlPart, SearchOrder:=xlByRows, _
+            SearchDirection:=xlPrevious, MatchCase:=False)
+        If Not f Is Nothing Then
+            maxLr = f.Row
+        Else
+            maxLr = 1
+        End If
+    End If
+    LastDataRow = maxLr
+End Function
+
+Private Function IsRowEmpty(ws As Worksheet, rowNum As Long, firstCol As Long, lastCol As Long) As Boolean
+    Dim rng As Range
+    Set rng = ws.Range(ws.Cells(rowNum, firstCol), ws.Cells(rowNum, lastCol))
+    IsRowEmpty = WorksheetFunction.CountA(rng) = 0
+End Function
+
+Private Function ToSQLDate(ByVal v As Variant) As String
+    On Error GoTo fail
+    If IsDate(v) Then
+        ToSQLDate = Format$(CDate(v), "yyyy-mm-dd")
+        Exit Function
+    End If
+    Dim s As String: s = Trim$(CStr(v))
+    If Len(s) = 0 Then ToSQLDate = "": Exit Function
+    s = Replace$(s, ",", " ")
+    s = Replace$(s, ChrW(160), " ")
+    Do While InStr(s, "  ") > 0: s = Replace$(s, "  ", " "): Loop
+    Dim tokens() As String: tokens = Split(s, " ")
+    Dim datePart As String: datePart = tokens(0)
+    Dim parts() As String: parts = Split(datePart, "/")
+    If UBound(parts) < 2 Then GoTo fail
+    Dim m As Long, d As Long, y As Long
+    m = CLng(Val(parts(0))): d = CLng(Val(parts(1))): y = CLng(Val(parts(2)))
+    If y < 100 Then y = 2000 + y
+    If m < 1 Or m > 12 Or d < 1 Or d > 31 Or y < 1900 Or y > 2100 Then GoTo fail
+    ToSQLDate = Format$(DateSerial(y, m, d), "yyyy-mm-dd")
+    Exit Function
+fail:
+    ToSQLDate = ""
+End Function
+
+Private Function ResolveDepartment(v As Variant, dictDept As Object, ByRef unmatched As Collection) As Variant
+    Dim s As String
+    If Trim$(CStr(v)) = "" Then
+        ResolveDepartment = CVErr(xlErrNA)
+        Exit Function
+    End If
+    If IsNumeric(v) Then
+        ResolveDepartment = CLng(v)
+        Exit Function
+    End If
+    s = Trim$(CStr(v))
+    If dictDept.Exists(UCase$(s)) Then
+        ResolveDepartment = dictDept(UCase$(s))
+    Else
+        ResolveDepartment = CVErr(xlErrNA)
+        On Error Resume Next
+        unmatched.Add s
+        On Error GoTo 0
+    End If
+End Function
+
+Private Function ToSQLNVarCharOrNull(v As Variant) As String
+    Dim s As String: s = CStr(v)
+    If Len(Trim$(s)) = 0 Then
+        ToSQLNVarCharOrNull = "NULL"
+    Else
+        ToSQLNVarCharOrNull = "N'" & Replace$(s, "'", "''") & "'"
+    End If
+End Function
+
+Private Function ToSQLNumberOrNull(v As Variant) As String
+    If IsNull(v) Or IsError(v) Then
+        ToSQLNumberOrNull = "NULL"
+    ElseIf Trim$(CStr(v)) = "" Then
+        ToSQLNumberOrNull = "NULL"
+    Else
+        ToSQLNumberOrNull = CStr(v)
+    End If
+End Function
+
+Private Function ToBitOrNull(v As Variant) As String
+    Dim s As String
+    If VarType(v) = vbBoolean Then
+        ToBitOrNull = IIf(v, "1", "0")
+        Exit Function
+    End If
+    s = UCase$(Trim$(CStr(v)))
+    Select Case s
+        Case "TRUE", "VERDADERO", "YES", "SÍ", "SI", "1": ToBitOrNull = "1"
+        Case "FALSE", "FALSO", "NO", "0": ToBitOrNull = "0"
+        Case Else: ToBitOrNull = "NULL"
+    End Select
+End Function
+
+Private Function GetDownloadsPath() As String
+    Dim p As String
+    p = Environ$("USERPROFILE")
+    If Len(p) > 0 Then
+        p = p & "\Downloads\"
+        If Dir(p, vbDirectory) <> vbNullString Then
+            GetDownloadsPath = p
+            Exit Function
+        End If
+    End If
+    GetDownloadsPath = ThisWorkbook.Path & Application.PathSeparator
+End Function
+
+Private Sub WriteUtf8File(ByVal filePath As String, ByVal content As String)
+    Dim stm As Object
+    Set stm = CreateObject("ADODB.Stream")
+    With stm
+        .Type = 2
+        .Charset = "utf-8"
+        .Open
+        .WriteText content
+        .SaveToFile filePath, 2
+        .Close
+    End With
+End Sub
+
+Private Sub DumpUnmatched(ByVal unmatched As Collection)
+    Dim ws As Worksheet, i As Long, r As Long
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    ThisWorkbook.Worksheets("Export_Log").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+    Set ws = ThisWorkbook.Worksheets.Add
+    ws.Name = "Export_Log"
+    ws.Range("A1").Value = "Departamentos no mapeados"
+    r = 2
+    For i = 1 To unmatched.Count
+        ws.Cells(r, 1).Value = unmatched(i)
+        r = r + 1
+    Next i
+    ws.Columns("A:A").AutoFit
+
+End Sub
