@@ -35,129 +35,86 @@ Key Relationships (simplified)
  VoC ──(join)── department (by name) and agent (by id)
  SLA_ABA + ASA_AHT ──(agg)── telephony metrics (ASA/AHT/SLA/ABA)
 
- 📊 ## Analytical Views (selection & purpose)
+The database is organized under the CustomerService schema, with tables and views covering the following core areas:
+1. Agent & Team Management
 
-Views use DAILY, WEEKLY, MONTHLY, AGENT prefixes for reporting clarity.
+agent: Stores agent profiles, including names, department, team leader, and start date.
+tl: Team leader profiles.
+agent_target: Defines daily productivity targets by department and agent seniority.
+shifts: Tracks agent shift times.
+shrinkage: Records shrinkage events (non-productive time).
 
+2. Case & Ticket Tracking
 
+incoming_tickets: Logs incoming support tickets by department, date, agent, and language.
+agent_productivity: Tracks cases resolved by agents, including age and department.
+agent_transfer: Records case transfers between departments.
+billables: Tracks billable cases, time spent, and revenue.
 
-Productivity & Activity
+3. Customer Feedback & Surveys
 
-DAILY_productivity · mix of cases, transfers, and outbounds per agent and department, with scaling by age
-AGENTS_Monthly_Productivity · average productivity per worked day and monthly total per agent
-WEEKLY_Productivity · weekly aggregates by department
+VoC: Voice of Customer survey results, including NPS, CSAT, NES, comments, and resolution status.
+surveys_sent: Records surveys sent to customers.
+quality_evaluations: Stores quality scores for calls and emails.
 
+4. Performance Metrics
 
+ASA_AHT: Tracks call metrics (Average Speed of Answer, Average Handle Time).
+SLA_ABA: Service Level Agreement and Abandonment metrics.
+IVR_abandoned: IVR call abandonment statistics.
+repeat_cases / repeat_rate / repeats / repeat_rca: Tracks repeat cases and root cause analysis.
 
-Telephony (ASA/AHT/SLA/ABA)
+5. Operational Data
 
-DAILY_call_performance, WEEKLY_call_performance, MONTHLY_call_performance · inbound, %SLA, %Abandonment, ASA/AHT in seconds and HH:mm:ss format
-AGENT_Monthly_call_performance · metrics by agent and department
+department: Department metadata, vertical, group, and hierarchy.
+date: Calendar table with week, month, and year attributes.
+priority: Ticket priority definitions.
+inventory: Tracks inventory-related cases.
 
+6. Additional Tables
 
+outbounds: Outbound actions by agents.
+resolution_sla: SLA compliance for case resolutions.
+spam: Spam case tracking.
+support_email: Support email addresses by department.
 
-Outbounds / Incoming
+Views
+The database includes numerous views for reporting and analytics, such as:
 
-DAILY_Outbounds, AGENTS_daily_Outbounds, MONTHLY_Outbounds, WEEKLY_Outbounds
-DAILY_Incoming_Total · customers vs incoming transfers
-DAILY_IncomingVSresolved · incoming vs resolved cases (via agent_productivity)
-MONTHLY_Incoming, WEEKLY_Incoming
+AGENTS_Monthly_Outbounds: Monthly outbound actions per agent.
+AGENTS_Monthly_Productivity: Monthly productivity metrics per agent.
+AGENT_KPIS: Key performance indicators per agent.
+DAILY_IncomingVSresolved: Daily comparison of incoming tickets vs. resolved cases.
+MONTHLY_Call_performance: Monthly call performance metrics.
+MONTHLY_VoC_SUMMARY: Monthly summary of customer feedback.
 
+Key Features
 
+Comprehensive agent and case tracking for operational transparency.
+Integrated survey and feedback analysis (NPS, CSAT, NES).
+Repeat case and root cause analytics for continuous improvement.
+Flexible reporting views for daily, weekly, and monthly performance.
+Support for multiple departments and verticals.
 
-Repeat Rate (RR)
+Usage
 
-DAILY_RR, WEEKLY_RR, MONTHLY_RR · %RR = 3_repeats / all_touchpoints * 100
-AGENT_Monthly_RR · RR at agent and TL level
+Data Extraction: Use SQL queries or reporting tools (e.g., Power BI, DBeaver) to extract and analyze data.
+ETL Integration: Data can be loaded from CRM platforms (e.g., Salesforce) and transformed via Excel macros before loading into Azure SQL.
+Reporting: Views are optimized for KPI dashboards, agent scorecards, and operational analysis.
 
+Getting Started
 
+Connect to the Database: Ensure VPN access (e.g., FortiClient) and use provided credentials for Azure SQL Server.
+Review Schema: Familiarize yourself with table definitions and relationships.
+Use Views for Reporting: Leverage pre-built views for common analytics needs.
+Maintain Data Integrity: All agent and case changes should be made in SQL, not just in Excel, to avoid reporting errors.
 
-Voice of Customer (VoC)
+Author & Maintenance
 
-MONTHLY_VoC, WEEKLY_VoC, AGENT_MONTHLY_VoC, MONTHLY_VoC_SUMMARY · NPS, CSAT_Service, NES, CSAT_Product, resolution
-Segments: VoC_PMS, VoC_PMS_Negative, VoC_Partners_L2, VoC_Payments, VoC_Payments_Negative
-Reasons: MONTHLY_VoC_Reasons
+Author: Antonio Romero [antonio.romero@weareplanet.com]
+Contact: For technical issues or schema updates, contact the Continuous Improvement Senior Lead.
 
+Additional Resources
 
-
-Einstein/Support Email
-
-MONTHLY_einstein, WEEKLY_einstein · reopened vs incoming by email
-
-
-
-Ticket SLA & Resolution
-
-DAILY_Ticket_SLA, WEEKLY_Ticket_SLA, MONTHLY_Tickets_SLA
-WEEKLY_resolution_sla
-
-
-
-RCA & Discretion
-
-MONTHLY_RCA_Analysis · RCA and VoC cross-analysis
-Repeat_RCA_view · repeat causes by agent
-discretion_scores · monthly discretion score by agent/TL
-
-
-
-Comprehensive Agent KPIs
-
-AGENT_KPIS · monthly compendium: outbounds, average productivity, total calls, %SLA, %SLA VIP, %Abandonment, ASA/AHT, resolution, NPS, CSAT/NES, CSAT Product, RR, quality (call/email/total)
-
-
-
-
-🔢 ## Metric Definitions
-
-ASA (Average Speed of Answer): average total_ring_duration (queue) per call. Returned in seconds; some views also provide HH:mm:ss format.
-AHT (Average Handle Time): avg(talk_time) + avg(queue_time) + 120 (includes 120s admin). Result in seconds.
-SLA: percentage of calls with sla = 1 over total_calls. (VIP: filter by department_id {37,9,10})
-ABA (Abandoned): percentage of calls with aba = 1 over total_calls
-RR (Repeat Rate): 3_repeats / all_touchpoints * 100
-Productivity: cases per agent/day; in AGENTS_Monthly_Productivity, also prod_per_day = total cases / worked days
-VoC:
-NPS = %Promoters − %Detractors
-CSAT_Service, NES, CSAT_Product = % positive responses over total valid responses
-Resolution_total = % surveys with survey_resolution = 1
-
-
-
-
-⚙️ ## Requirements
-
-SQL Server 2019+ (or Azure SQL) with T‑SQL compatibility: FORMAT, TRY_CONVERT, COUNT_BIG, computed columns, and IDENTITY
-Permissions to create schemas, tables, views, indexes, and constraints
-
-
-The calendar uses Thursday–Wednesday weeks (Week_Year / Week_number). Adjust if your standard differs.
-
-🚀 ## Installation
-
-Open SQL Server Management Studio (SSMS)
-Run the contents of SQL_database_CS.sql in your target database
-Verify created objects (example):
-
-SELECT s.name, o.name, o.type_desc
-FROM sys.schemas s
-JOIN sys.objects o ON o.schema_id = s.schema_id
-WHERE s.name IN ('CustomerService','APP_FLOW');
-
-🔒 ## Quality & Integrity Considerations
-
-Constraints: PK/UNIQUE/FK on agent, department, etc.; CHECKs in IVR_abandoned for sla/aba ranges and non-negative inbound
-Collation: The script mixes SQL_Latin1_General_CP1_CI_AS and Latin1_General_100_CI_AS. Keep collation consistent to avoid warnings
-Indexes: Nonclustered indexes on high-volume tables (by date/department) to speed up aggregations
-
-🧭 ## Conventions & Notes
-
-View prefixes: DAILY_, WEEKLY_, MONTHLY_, AGENT_
-Month_number and Week_number come from the date table and/or computed columns
-department_name is used as a join key in several VoC views; if department names change, consider a department dimension with surrogate key
-item_target in agent is a computed column (8/15/20 daily items) based on months since start_date
-
-👤 ## Author & Context
-Designed for Customer Service teams needing daily/weekly/monthly visibility of performance and customer experience.
-If you have questions or want to adapt the views to your week model contact Antonio Romero antonio.romero@weareplanet.com
-
- 
+Internal documentation and training materials are available for onboarding and advanced usage.
+For technical support or access issues, refer to the agent support hotline or internal Confluence pages.
