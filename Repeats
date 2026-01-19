@@ -1,1 +1,399 @@
+---SQL logic
+-- CustomerService.DAILY_RR_new source
 
+ALTER VIEW [CustomerService].[DAILY_RR_new]
+AS
+/*  DAILY_RR_by_case (7D rolling, case-level)
+    - Granularity: [date] x [department_id] x [case_number]
+    - Agent of the day: last agent who touched the case that day (by timestamp).
+
+    ---------------------------------------------------------------------------
+    RAW TOUCHPOINTS LOGIC (kept as-is):
+      TP_after(d)  = raw touchpoints in [d-6, d]
+      TP_before(d) = raw touchpoints in [d-6, d-1]
+      repeats_after(d)  = MAX(0, TP_after(d)  - 2)
+      repeats_before(d) = MAX(0, TP_before(d) - 2)
+      repeat_touchpoints_today = repeats_after - repeats_before, clamped to [0, touchpoints_today]
+      is_repeat_day = 1 if TP_after >= 3 else 0
+
+    NEW: EPISODE LOGIC (each seed/contact projects 7 days):
+      Every row in repeats is a seed (customer contact).
+      An episode seeded at date S is active on days in [S, S+6].
+
+      On day d (per case_number):
+        episodes_after(d)  = #seeds with S in [d-6, d]
+        episodes_before(d) = #seeds with S in [d-6, d-1]
+        repeats_after_ep(d)  = MAX(0, episodes_after(d)  - 2)
+        repeats_before_ep(d) = MAX(0, episodes_before(d) - 2)
+        new_episodes_today(d)       = #seeds with S = d
+        inherited_episodes_today(d) = episodes_after(d) - new_episodes_today(d)
+
+        net_repeat_items_today_ep(d)      = MAX(0, repeats_after_ep - repeats_before_ep)
+        new_repeat_items_today_ep(d)      = MIN(new_episodes_today, net_repeat_items_today_ep)
+        inherited_repeat_items_today_ep(d)= net_repeat_items_today_ep - new_repeat_items_today_ep
+
+      Flags:
+        is_repeat_day_ep        = 1 if episodes_after >= 3 else 0
+        repeat_episode_pressure = MAX(0, episodes_after - 2)
+    ---------------------------------------------------------------------------
+*/
+
+WITH base AS (
+    /* Keep original timestamp to pick the last agent of the day */
+    SELECT
+        CAST(r.[Date] AS date) AS [date],  -- day grain
+        r.[Date]               AS tp_dt,   -- original datetime
+        r.case_number,
+        r.department_id,
+        r.agent_id,
+        r.[language],
+        r.[account_name],
+        r.[account_country]
+    FROM [APP_FLOW].[CustomerService].[repeats] AS r
+),
+case_tp_day AS (
+    /* Daily raw TP count per case */
+    SELECT
+        b.[date],
+        b.case_number,
+        COUNT(*) AS tp_cnt_day
+    FROM base AS b
+    GROUP BY b.[date], b.case_number
+),
+roll_7_raw_after AS (
+    /* TP_after(d): raw TPs in [d-6, d] */
+    SELECT
+        d1.[date],
+        d1.case_number,
+        COALESCE(SUM(d2.tp_cnt_day), 0) AS tp_raw_after
+    FROM case_tp_day AS d1
+    LEFT JOIN case_tp_day AS d2
+      ON d2.case_number = d1.case_number
+     AND d2.[date] BETWEEN DATEADD(DAY, -6, d1.[date]) AND d1.[date]
+    GROUP BY d1.[date], d1.case_number
+),
+roll_7_raw_before AS (
+    /* TP_before(d): raw TPs in [d-6, d-1] */
+    SELECT
+        d1.[date],
+        d1.case_number,
+        COALESCE(SUM(d2.tp_cnt_day), 0) AS tp_raw_before
+    FROM case_tp_day AS d1
+    LEFT JOIN case_tp_day AS d2
+      ON d2.case_number = d1.case_number
+     AND d2.[date] BETWEEN DATEADD(DAY, -6, d1.[date]) AND DATEADD(DAY, -1, d1.[date])
+    GROUP BY d1.[date], d1.case_number
+),
+agent_rank_day AS (
+    /* Rank agents per case & day to pick the "last of the day" */
+    SELECT
+        b.[date],
+        b.case_number,
+        b.agent_id,
+        COUNT(*)     AS tp_cnt_day_agent,
+        MAX(b.tp_dt) AS last_tp_dt,
+        ROW_NUMBER() OVER (
+            PARTITION BY b.[date], b.case_number
+            ORDER BY MAX(b.tp_dt) DESC, COUNT(*) DESC, b.agent_id DESC
+        ) AS rn_last
+    FROM base AS b
+    GROUP BY b.[date], b.case_number, b.agent_id
+),
+case_day_repr AS (
+    /* Representative row per case-day */
+    SELECT
+        b.[date],
+        b.case_number,
+        b.department_id,
+
+        ar.agent_id AS primary_agent_id,
+
+        /* Optional: list all agents that day (useful for QA) */
+        STRING_AGG(CAST(ar_all.agent_id AS varchar(20)), ',') WITHIN GROUP (ORDER BY ar_all.agent_id) AS agents_list_day,
+
+        MIN(b.[language])        AS language_sample,
+        MIN(b.[account_name])    AS account_name_sample,
+        MIN(b.[account_country]) AS country_sample,
+
+        COUNT(*) AS total_touchpoints_day
+    FROM base AS b
+    LEFT JOIN (
+        SELECT [date], case_number, agent_id
+        FROM agent_rank_day
+        WHERE rn_last = 1
+    ) AS ar
+      ON ar.[date] = b.[date]
+     AND ar.case_number = b.case_number
+    LEFT JOIN agent_rank_day AS ar_all
+      ON ar_all.[date] = b.[date]
+     AND ar_all.case_number = b.case_number
+    GROUP BY b.[date], b.case_number, b.department_id, ar.agent_id
+),
+repeat_calc AS (
+    /* RAW touchpoints repeat metrics per case-day */
+    SELECT
+        a.[date],
+        a.case_number,
+        ra.tp_raw_after,
+        rb.tp_raw_before,
+        CASE WHEN ra.tp_raw_after  > 2 THEN ra.tp_raw_after  - 2 ELSE 0 END AS repeats_after,
+        CASE WHEN rb.tp_raw_before > 2 THEN rb.tp_raw_before - 2 ELSE 0 END AS repeats_before
+    FROM roll_7_raw_after  AS ra
+    JOIN roll_7_raw_before AS rb
+      ON rb.[date] = ra.[date]
+     AND rb.case_number = ra.case_number
+    JOIN case_tp_day AS a
+      ON a.[date] = ra.[date]
+     AND a.case_number = ra.case_number
+),
+daily_by_case AS (
+    /* Attach RAW repeat metrics to the representative case-day row */
+    SELECT
+        cdr.[date],
+        cdr.case_number,
+        cdr.department_id,
+        cdr.primary_agent_id,
+        cdr.agents_list_day,
+        cdr.language_sample,
+        cdr.account_name_sample,
+        cdr.country_sample,
+        cdr.total_touchpoints_day,
+
+        rc.tp_raw_after,
+        rc.tp_raw_before,
+        rc.repeats_after,
+        rc.repeats_before,
+
+        /* repeats today = (repeats_after - repeats_before), clamped to [0, total_touchpoints_day] */
+        CASE
+            WHEN (rc.repeats_after - rc.repeats_before) < 0 THEN 0
+            WHEN (rc.repeats_after - rc.repeats_before) > cdr.total_touchpoints_day
+                THEN cdr.total_touchpoints_day
+            ELSE (rc.repeats_after - rc.repeats_before)
+        END AS repeat_touchpoints_today,
+
+        CASE WHEN rc.tp_raw_after >= 3 THEN 1 ELSE 0 END AS is_repeat_day
+    FROM case_day_repr AS cdr
+    JOIN repeat_calc   AS rc
+      ON rc.[date] = cdr.[date]
+     AND rc.case_number = cdr.case_number
+),
+
+/* =====================  EPISODE-BASED ADD-ONS (NEW)  ===================== */
+
+/* 1) Every row in base is a customer contact (seed). */
+episode_seeds AS (
+    SELECT
+        b.case_number,
+        CAST(b.tp_dt AS date) AS seed_date,
+        b.tp_dt               AS seed_ts,
+        ROW_NUMBER() OVER (
+            PARTITION BY b.case_number
+            ORDER BY b.tp_dt
+        ) AS seed_seq
+    FROM base AS b
+),
+
+/* 2) Expand each seed to its 7-day influence window: [seed_date, seed_date + 6] */
+episode_windows AS (
+    SELECT
+        s.case_number,
+        s.seed_date,
+        s.seed_ts,
+        s.seed_seq,
+        DATEADD(DAY, v.n, s.seed_date) AS [date]
+    FROM episode_seeds AS s
+    CROSS APPLY (VALUES (0),(1),(2),(3),(4),(5),(6)) AS v(n)
+),
+
+/* 3) Active episodes per case-day */
+episodes_by_day AS (
+    SELECT
+        w.[date],
+        w.case_number,
+        COUNT(*) AS episodes_active
+    FROM episode_windows AS w
+    GROUP BY w.[date], w.case_number
+),
+
+/* 4) Split active episodes into new (seeds today) vs inherited (seeds before today) */
+episodes_by_day_split AS (
+    SELECT
+        d.[date],
+        d.case_number,
+
+        d.episodes_active AS episodes_after,                                 -- seeds in [d-6, d]
+        COALESCE(eb.episodes_before, 0) AS episodes_before,                  -- seeds in [d-6, d-1]
+        COALESCE(en.new_episodes_today, 0) AS new_episodes_today,            -- seeds at d
+        (d.episodes_active - COALESCE(en.new_episodes_today, 0)) AS inherited_episodes_today
+    FROM episodes_by_day AS d
+    LEFT JOIN (
+        SELECT
+            w2.[date],
+            w2.case_number,
+            COUNT(*) AS episodes_before
+        FROM episode_windows AS w2
+        WHERE w2.seed_date BETWEEN DATEADD(DAY, -6, w2.[date]) AND DATEADD(DAY, -1, w2.[date])
+        GROUP BY w2.[date], w2.case_number
+    ) AS eb
+      ON eb.[date] = d.[date]
+     AND eb.case_number = d.case_number
+    LEFT JOIN (
+        SELECT
+            s.seed_date AS [date],
+            s.case_number,
+            COUNT(*) AS new_episodes_today
+        FROM episode_seeds AS s
+        GROUP BY s.seed_date, s.case_number
+    ) AS en
+      ON en.[date] = d.[date]
+     AND en.case_number = d.case_number
+),
+
+/* 5) Episode-based repeats today and before, plus split new vs inherited */
+episode_repeats_today AS (
+    SELECT
+        s.[date],
+        s.case_number,
+
+        s.episodes_after,
+        s.episodes_before,
+        s.new_episodes_today,
+        s.inherited_episodes_today,
+
+        CASE WHEN s.episodes_after  > 2 THEN s.episodes_after  - 2 ELSE 0 END AS repeats_after_ep,
+        CASE WHEN s.episodes_before > 2 THEN s.episodes_before - 2 ELSE 0 END AS repeats_before_ep
+    FROM episodes_by_day_split AS s
+),
+
+/* 6) Attach episode metrics to the representative case-day rows */
+daily_by_case_with_episodes AS (
+    SELECT
+        dbyc.*,
+
+        /* Episodes transparency (day grain) */
+        COALESCE(er.episodes_after, 0)            AS episodes_active_7d,
+        COALESCE(er.episodes_before, 0)           AS episodes_active_7d_before,
+        COALESCE(er.new_episodes_today, 0)        AS new_episodes_today,
+        COALESCE(er.inherited_episodes_today, 0)  AS inherited_episodes_today,
+
+        /* Repeats (episodes) after/before */
+        COALESCE(er.repeats_after_ep, 0)          AS repeat_items_today_ep_after,
+        COALESCE(er.repeats_before_ep, 0)         AS repeat_items_today_ep_before,
+
+        /* Net episode repeats today */
+        CASE 
+            WHEN COALESCE(er.repeats_after_ep,0) - COALESCE(er.repeats_before_ep,0) < 0
+            THEN 0
+            ELSE COALESCE(er.repeats_after_ep,0) - COALESCE(er.repeats_before_ep,0)
+        END AS repeat_items_today_ep_net,
+
+        /* Allocate today's net repeats between NEW vs INHERITED episodes */
+        CASE 
+            WHEN COALESCE(er.repeats_after_ep,0) - COALESCE(er.repeats_before_ep,0) <= 0 THEN 0
+            ELSE 
+                CASE 
+                    WHEN COALESCE(er.new_episodes_today,0) < (COALESCE(er.repeats_after_ep,0) - COALESCE(er.repeats_before_ep,0))
+                    THEN COALESCE(er.new_episodes_today,0)
+                    ELSE (COALESCE(er.repeats_after_ep,0) - COALESCE(er.repeats_before_ep,0))
+                END
+        END AS new_repeat_items_today_ep,
+
+        CASE 
+            WHEN (COALESCE(er.repeats_after_ep,0) - COALESCE(er.repeats_before_ep,0)) <= 0 THEN 0
+            ELSE (COALESCE(er.repeats_after_ep,0) - COALESCE(er.repeats_before_ep,0)) -
+                 CASE 
+                    WHEN COALESCE(er.new_episodes_today,0) < (COALESCE(er.repeats_after_ep,0) - COALESCE(er.repeats_before_ep,0))
+                    THEN COALESCE(er.new_episodes_today,0)
+                    ELSE (COALESCE(er.repeats_after_ep,0) - COALESCE(er.repeats_before_ep,0))
+                 END
+        END AS inherited_repeat_items_today_ep,
+
+        /* ---- NEW FLAGS ---- */
+        CASE WHEN COALESCE(er.episodes_after,0) >= 3 THEN 1 ELSE 0 END AS is_repeat_day_ep,
+        CASE WHEN COALESCE(er.episodes_after,0) > 2 
+             THEN COALESCE(er.episodes_after,0) - 2 
+             ELSE 0 
+        END AS repeat_episode_pressure
+    FROM daily_by_case AS dbyc
+    LEFT JOIN episode_repeats_today AS er
+      ON er.[date]      = dbyc.[date]
+     AND er.case_number = dbyc.case_number
+)
+
+SELECT
+    dbyc.[date],
+    dbyc.department_id,
+    d.department_name,
+
+    dbyc.case_number,
+
+    /* Agent of the day */
+    dbyc.primary_agent_id AS agent_id,
+    CONCAT(a.first_name, ' ', a.last_name) AS agent_name,
+    dbyc.agents_list_day,
+
+    /* Samples */
+    dbyc.language_sample,
+    dbyc.account_name_sample,
+    dbyc.country_sample,
+
+    /* ---- Daily metrics (RAW) ---- */
+    dbyc.total_touchpoints_day AS total_touchpoints,
+    dbyc.repeat_touchpoints_today AS repeat_touchpoints,
+    CAST(
+        CASE WHEN dbyc.total_touchpoints_day = 0 THEN 0
+             ELSE dbyc.repeat_touchpoints_today * 100.0 / dbyc.total_touchpoints_day
+        END AS DECIMAL(5,2)
+    ) AS RR_pct_day,  -- RAW daily
+
+    /* ---- 7D metrics (RAW) ---- */
+    dbyc.tp_raw_after AS total_touchpoints_7d,
+    CASE 
+        WHEN (dbyc.repeats_after - dbyc.repeats_before) < 0 
+        THEN 0 
+        ELSE (dbyc.repeats_after - dbyc.repeats_before) 
+    END AS repeat_item_7d,
+    CAST(
+        CASE 
+            WHEN dbyc.tp_raw_after = 0 THEN 0
+            ELSE 
+                (CASE 
+                    WHEN (dbyc.repeats_after - dbyc.repeats_before) < 0 
+                    THEN 0 
+                    ELSE (dbyc.repeats_after - dbyc.repeats_before) 
+                 END) * 100.0 / dbyc.tp_raw_after
+        END AS DECIMAL(5,2)
+    ) AS RR_pct,  -- 7D RAW
+
+    /* ---- Episode-based transparency (NEW) ---- */
+    dbyc.episodes_active_7d,
+    dbyc.episodes_active_7d_before,
+    dbyc.new_episodes_today,
+    dbyc.inherited_episodes_today,
+
+    /* Episode-based repeats (NEW) */
+    dbyc.repeat_items_today_ep_after,
+    dbyc.repeat_items_today_ep_before,
+    dbyc.repeat_items_today_ep_net,
+    dbyc.new_repeat_items_today_ep,
+    dbyc.inherited_repeat_items_today_ep,
+
+    /* ---- NEW FLAGS ---- */
+    dbyc.is_repeat_day_ep,
+    dbyc.repeat_episode_pressure,
+
+    /* Episode-based RR% (optional) */
+    CAST(
+        CASE WHEN dbyc.episodes_active_7d = 0 THEN 0
+             ELSE dbyc.repeat_items_today_ep_after * 100.0 / dbyc.episodes_active_7d
+        END AS DECIMAL(5,2)
+    ) AS RR_pct_episode,
+
+    /* ---- RAW transparency (unchanged) ---- */
+    dbyc.is_repeat_day,
+    dbyc.tp_raw_before,
+    dbyc.tp_raw_after
+FROM daily_by_case_with_episodes AS dbyc
+LEFT JOIN [APP_FLOW].[CustomerService].[agent]      AS a ON a.agent_id     = dbyc.primary_agent_id
+LEFT JOIN [APP_FLOW].[CustomerService].[department] AS d ON d.department_id = dbyc.department_id;
