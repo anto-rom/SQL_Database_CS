@@ -1,0 +1,367 @@
+SF Report:00OR600000BvCqwMAF
+
+Option Explicit
+
+'==========================================
+'  Export_Ticket_SLA_SQL_Robusto
+'  - Renombra encabezados en Main
+'  - Mapea Team -> department_id (department!B->A)
+'  - Mapea Priority -> priority (priority!B->A)
+'  - Formatea fechas a yyyy-mm-dd (sin hora)
+'  - Calcula in_SLA: vacío->NULL, <=2->1, >2->0
+'  - Exporta INSERT INTO ... en bloques de 900 filas
+'  - Guarda en carpeta Downloads (fallback a Documentos)
+'  - Crea hoja de log: Log_Export
+'==========================================
+
+Public Sub Export_Ticket_SLA_SQL_Robusto()
+    Dim ws As Worksheet, wsDept As Worksheet, wsPrio As Worksheet
+    Dim logWS As Worksheet, logRow As Long
+    Dim colSLA As Long, colOpen As Long, colCase As Long
+    Dim colTeam As Long, colPrio As Long, colReply As Long, colInSLA As Long
+    Dim lastRow As Long, r As Long
+    Dim blocks As Long, rowsOut As Long
+    
+    On Error GoTo ErrHandler
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    
+    '--- Log
+    Set logWS = PrepareLogSheet("Log_Export")
+    logRow = 2: LogMsg logWS, logRow, "Inicio", Now
+    
+    '--- Hojas
+    Set ws = ThisWorkbook.Worksheets("Main")
+    Set wsDept = ThisWorkbook.Worksheets("department")
+    Set wsPrio = ThisWorkbook.Worksheets("priority")
+    LogMsg logWS, logRow, "Hojas", "Main, department, priority localizadas"
+    
+    '--- localizar columnas (soporta encabezados ya cambiados)
+    colSLA = FindHeaderAny(ws, Array("SLA_difference"))
+    colOpen = FindHeaderAny(ws, Array("Date_open", "Date/Time Opened"))
+    colCase = FindHeaderAny(ws, Array("case_number", "Case Number"))
+    colTeam = FindHeaderAny(ws, Array("department_id", "Team"))
+    colPrio = FindHeaderAny(ws, Array("priority", "Priority"))
+    colReply = FindHeaderAny(ws, Array("Date_replied", "Date/Time Replied"))
+    
+    Dim missing As String: missing = ""
+    If colSLA = 0 Then missing = missing & "SLA_difference" & vbCrLf
+    If colOpen = 0 Then missing = missing & "Date_open / Date/Time Opened" & vbCrLf
+    If colCase = 0 Then missing = missing & "case_number / Case Number" & vbCrLf
+    If colTeam = 0 Then missing = missing & "department_id / Team" & vbCrLf
+    If colPrio = 0 Then missing = missing & "priority / Priority" & vbCrLf
+    If colReply = 0 Then missing = missing & "Date_replied / Date/Time Replied" & vbCrLf
+    
+    If missing <> "" Then
+        Err.Raise vbObjectError + 700, , "Encabezados no encontrados:" & vbCrLf & missing
+    End If
+    
+    '--- renombrar encabezados a definitivos
+    ws.Cells(1, colSLA).Value = "SLA_difference"
+    ws.Cells(1, colOpen).Value = "Date_open"
+    ws.Cells(1, colCase).Value = "case_number"
+    ws.Cells(1, colTeam).Value = "department_id"
+    ws.Cells(1, colPrio).Value = "priority"
+    ws.Cells(1, colReply).Value = "Date_replied"
+    
+    '--- in_SLA (crear si no existe o limpiar si existe)
+    colInSLA = FindHeaderAny(ws, Array("in_SLA"))
+    If colInSLA = 0 Then
+        colInSLA = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column + 1
+        ws.Cells(1, colInSLA).Value = "in_SLA"
+    Else
+        ws.Range(ws.Cells(2, colInSLA), ws.Cells(ws.Rows.Count, colInSLA)).ClearContents
+    End If
+    
+    '--- mapeos
+    Dim dDept As Object, dPrio As Object
+    Set dDept = CreateObject("Scripting.Dictionary"): dDept.CompareMode = 1 ' TextCompare
+    Set dPrio = CreateObject("Scripting.Dictionary"): dPrio.CompareMode = 1
+    
+    LoadMap wsDept, 1, 2, dDept, "department" ' id en col A, name en col B
+    LoadMap wsPrio, 1, 2, dPrio, "priority"   ' id en col A, name en col B
+    
+    '--- transformar filas
+    lastRow = LastUsedRow(ws)
+    Dim slaVal As String, dateOpen As String, dateRep As String
+    Dim teamName As String, deptID As String
+    Dim prioName As String, prioID As String
+    Dim caseNum As String, inSLA As String
+    
+    Dim rowsTouched As Long: rowsTouched = 0
+    For r = 2 To lastRow
+        ' Lecturas seguras
+        slaVal = SafeText(ws.Cells(r, colSLA).Value)
+        caseNum = SafeText(ws.Cells(r, colCase).Value)
+        teamName = SafeText(ws.Cells(r, colTeam).Value)
+        prioName = SafeText(ws.Cells(r, colPrio).Value)
+        
+        ' Team ? department_id
+        If teamName <> "" And dDept.Exists(teamName) Then
+            deptID = CStr(dDept(teamName))
+        Else
+            deptID = "NULL"
+        End If
+        ws.Cells(r, colTeam).Value = deptID
+        
+        ' Priority ? priority
+        If prioName <> "" And dPrio.Exists(prioName) Then
+            prioID = CStr(dPrio(prioName))
+        Else
+            prioID = "NULL"
+        End If
+        ws.Cells(r, colPrio).Value = prioID
+        
+        ' Fechas ? yyyy-mm-dd (cadena); "-" o vacío ? NULL (exportaremos como NULL)
+        dateOpen = ToDateStr(ws.Cells(r, colOpen).Value)
+        dateRep = ToDateStr(ws.Cells(r, colReply).Value)
+        ws.Cells(r, colOpen).Value = dateOpen
+        ws.Cells(r, colReply).Value = dateRep
+        ws.Columns(colOpen).NumberFormat = "@"
+        ws.Columns(colReply).NumberFormat = "@"
+        
+        ' in_SLA: vacío ? NULL; <= 2 ? 1; > 2 ? 0
+        If slaVal = "" Then
+            inSLA = "NULL"
+        ElseIf SafeIsNumeric(slaVal) Then
+            If CDbl(slaVal) <= 2 Then inSLA = "1" Else inSLA = "0"
+        Else
+            inSLA = "NULL"
+        End If
+        ws.Cells(r, colInSLA).Value = inSLA
+        
+        rowsTouched = rowsTouched + 1
+    Next r
+    
+    LogMsg logWS, logRow, "Filas transformadas", rowsTouched
+    
+    '--- exportar SQL a Downloads
+    Dim downloadsPath As String, outPath As String
+    downloadsPath = GetDownloadsPath()
+    If downloadsPath = "" Then Err.Raise vbObjectError + 701, , "No se pudo resolver la carpeta 'Downloads'."
+    outPath = downloadsPath & Application.PathSeparator & "ticket_sla.sql"
+    
+    Dim fnum As Integer: fnum = FreeFile
+    Open outPath For Output As #fnum
+    
+    Dim valuesBlock As Collection: Set valuesBlock = New Collection
+    Dim v1 As String, v2 As String, v3 As String, v4 As String, v5 As String, v6 As String, v7 As String
+    
+    rowsOut = 0: blocks = 0
+    For r = 2 To lastRow
+        ' reconstruir desde celdas ya transformadas (lecturas seguras)
+        slaVal = SafeText(ws.Cells(r, colSLA).Value)
+        caseNum = SafeText(ws.Cells(r, colCase).Value)
+        deptID = SafeText(ws.Cells(r, colTeam).Value)
+        prioID = SafeText(ws.Cells(r, colPrio).Value)
+        dateOpen = SafeText(ws.Cells(r, colOpen).Value)
+        dateRep = SafeText(ws.Cells(r, colReply).Value)
+        inSLA = SafeText(ws.Cells(r, colInSLA).Value)
+        
+        ' si toda la fila está vacía, saltar
+        If (slaVal = "" And caseNum = "" And deptID = "" And prioID = "" And dateOpen = "" And dateRep = "" And inSLA = "") Then
+            GoTo NextR
+        End If
+        
+        ' Preparar tupla SQL ('texto' o NULL)
+        v1 = SqlifyOrNull(slaVal)
+        v2 = SqlifyOrNull(dateOpen)
+        v3 = SqlifyOrNull(caseNum)
+        v4 = SqlifyOrNull(NullIfTextNULL(deptID))
+        v5 = SqlifyOrNull(NullIfTextNULL(prioID))
+        v6 = SqlifyOrNull(dateRep)
+        v7 = SqlifyOrNull(NullIfTextNULL(inSLA))
+        
+        valuesBlock.Add "(" & v1 & ", " & v2 & ", " & v3 & ", " & v4 & ", " & v5 & ", " & v6 & ", " & v7 & ")"
+        rowsOut = rowsOut + 1
+        
+        If valuesBlock.Count = 900 Then
+            blocks = blocks + 1
+            Print #fnum, InsertHeader()
+            Print #fnum, JoinCollection(valuesBlock, "," & vbCrLf) & ";"
+            Print #fnum, vbCrLf
+            Set valuesBlock = New Collection
+        End If
+NextR:
+    Next r
+    
+    If valuesBlock.Count > 0 Then
+        blocks = blocks + 1
+        Print #fnum, InsertHeader()
+        Print #fnum, JoinCollection(valuesBlock, "," & vbCrLf) & ";"
+    End If
+    
+    Close #fnum
+    LogMsg logWS, logRow, "SQL", "Archivo: " & outPath
+    LogMsg logWS, logRow, "Bloques INSERT", blocks
+    LogMsg logWS, logRow, "Filas exportadas", rowsOut
+    
+    MsgBox "Transformación y exportación completadas." & vbCrLf & _
+           "Archivo: " & outPath & vbCrLf & _
+           "Bloques INSERT: " & blocks & vbCrLf & _
+           "Filas exportadas: " & rowsOut, vbInformation, "ticket_sla.sql creado"
+
+GoSafeExit:
+    On Error Resume Next
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Exit Sub
+
+ErrHandler:
+    LogMsg logWS, logRow, "ERROR", Err.Number & " - " & Err.Description
+    MsgBox "Se produjo un error: " & Err.Description, vbExclamation, "Export_Ticket_SLA_SQL_Robusto"
+    Resume GoSafeExit
+End Sub
+
+'==================== Helpers ====================
+
+Private Function FindHeaderAny(ws As Worksheet, names As Variant) As Long
+    Dim i As Long, c As Range
+    For i = LBound(names) To UBound(names)
+        Set c = ws.Rows(1).Find(What:=names(i), LookAt:=xlWhole, MatchCase:=False)
+        If Not c Is Nothing Then
+            FindHeaderAny = c.Column
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function LastUsedRow(ws As Worksheet) As Long
+    Dim c As Range
+    Set c = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), _
+                          SearchOrder:=xlByRows, SearchDirection:=xlPrevious, LookIn:=xlFormulas)
+    If c Is Nothing Then LastUsedRow = 1 Else LastUsedRow = c.Row
+End Function
+
+'===== Helpers seguros frente a celdas con error (#N/A, #VALUE!, etc.) =====
+
+Private Function SafeText(ByVal v As Variant) As String
+    ' Devuelve "" si la celda contiene un error o es Null; si no, Trim del texto
+    On Error GoTo Fallback
+    If IsError(v) Or IsNull(v) Then
+        SafeText = ""
+    Else
+        SafeText = Trim$(CStr(v))
+    End If
+    Exit Function
+Fallback:
+    SafeText = ""
+End Function
+
+Private Function SafeIsNumeric(ByVal v As Variant) As Boolean
+    ' True sólo si el contenido es numérico y no es error
+    On Error GoTo Fallback
+    If IsError(v) Then
+        SafeIsNumeric = False
+    Else
+        SafeIsNumeric = IsNumeric(v)
+    End If
+    Exit Function
+Fallback:
+    SafeIsNumeric = False
+End Function
+
+Private Function ToDateStr(v As Variant) As String
+    ' Convierte a "yyyy-mm-dd". Si hay error, vacío o "-", devuelve ""
+    On Error GoTo Fallback
+    If IsError(v) Or IsNull(v) Then Exit Function
+    
+    Dim s As String, p As Long
+    s = Trim$(CStr(v))
+    If s = "" Or s = "-" Then Exit Function
+    
+    ' Fecha válida directa
+    If IsDate(s) Then
+        ToDateStr = Format$(CDate(s), "yyyy-mm-dd")
+        Exit Function
+    End If
+    
+    ' Caso "11/9/2025, 12:07 AM": cortar por coma y probar parte de fecha
+    p = InStr(1, s, ",")
+    If p > 0 Then
+        s = Left$(s, p - 1)
+        If IsDate(s) Then
+            ToDateStr = Format$(CDate(s), "yyyy-mm-dd")
+            Exit Function
+        End If
+    End If
+    Exit Function
+Fallback:
+    ToDateStr = ""
+End Function
+
+Private Function SqlifyOrNull(ByVal s As String) As String
+    ' NULL sin comillas si vacío; si no, 'texto' con comillas simples escapadas
+    If Len(s) = 0 Then
+        SqlifyOrNull = "NULL"
+    Else
+        SqlifyOrNull = "'" & Replace(s, "'", "''") & "'"
+    End If
+End Function
+
+Private Function NullIfTextNULL(ByVal s As String) As String
+    If UCase$(s) = "NULL" Then NullIfTextNULL = "" Else NullIfTextNULL = s
+End Function
+
+Private Function InsertHeader() As String
+    InsertHeader = "INSERT INTO CustomerService.ticket_sla ([SLA_difference], [Date_open], [case_number], [department_id], [priority], [Date_replied], [in_SLA]) VALUES"
+End Function
+
+Private Function JoinCollection(col As Collection, ByVal delim As String) As String
+    Dim i As Long, tmp As String
+    For i = 1 To col.Count
+        If i > 1 Then tmp = tmp & delim
+        tmp = tmp & CStr(col(i))
+    Next i
+    JoinCollection = tmp
+End Function
+
+Private Function GetDownloadsPath() As String
+    On Error Resume Next
+    Dim os As String: os = Application.OperatingSystem
+    If InStr(1, os, "Mac", vbTextCompare) > 0 Then
+        GetDownloadsPath = Environ$("HOME") & "/Downloads"
+    Else
+        GetDownloadsPath = Environ$("USERPROFILE") & "\Downloads"
+        ' Fallback si la ruta no existe
+        If Len(Dir(GetDownloadsPath, vbDirectory)) = 0 Then
+            GetDownloadsPath = CreateObject("WScript.Shell").SpecialFolders("MyDocuments")
+        End If
+    End If
+End Function
+
+Private Function PrepareLogSheet(name As String) As Worksheet
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    ThisWorkbook.Worksheets(name).Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+    Set PrepareLogSheet = ThisWorkbook.Worksheets.Add
+    PrepareLogSheet.name = name
+    With PrepareLogSheet
+        .Range("A1:C1").Value = Array("Paso", "Detalle", "Marca de tiempo / Valor")
+        .Columns("A:C").ColumnWidth = 35
+        .Range("A1:C1").Font.Bold = True
+    End With
+End Function
+
+Private Sub LogMsg(ws As Worksheet, ByRef rowPtr As Long, stepName As String, detail As Variant)
+    ws.Cells(rowPtr, 1).Value = stepName
+    ws.Cells(rowPtr, 2).Value = detail
+    ws.Cells(rowPtr, 3).Value = Now
+    rowPtr = rowPtr + 1
+End Sub
+
+Private Sub LoadMap(mws As Worksheet, idCol As Long, nameCol As Long, dict As Object, mapName As String)
+    Dim lr As Long, r As Long, cnt As Long
+    lr = mws.Cells(mws.Rows.Count, idCol).End(xlUp).Row
+    For r = 2 To lr
+        If SafeText(mws.Cells(r, nameCol).Value) <> "" And SafeText(mws.Cells(r, idCol).Value) <> "" Then
+            dict(SafeText(mws.Cells(r, nameCol).Value)) = SafeText(mws.Cells(r, idCol).Value)
+            cnt = cnt + 1
+        End If
+    Next r
+End Sub
+

@@ -1,0 +1,86 @@
+SF Report No. 00OR6000007axtZMAQ
+
+
+Sub ExportCaseReasonsToSQL()
+    Dim wsMain As Worksheet, wsDept As Worksheet
+    Dim lastRow As Long, i As Long, blockSize As Long
+    Dim deptDict As Object
+    Dim sqlFile As Integer
+    Dim sqlPath As String
+    Dim insertHeader As String
+    Dim rowCount As Long
+    Dim rawDate As Variant, caseDate As String
+
+    ' Inicializar
+    Set wsMain = ThisWorkbook.Sheets("Main")
+    Set wsDept = ThisWorkbook.Sheets("department")
+    Set deptDict = CreateObject("Scripting.Dictionary")
+    blockSize = 900
+    sqlPath = Environ("USERPROFILE") & "\Downloads\case_reason_insert.sql"
+    sqlFile = FreeFile
+
+    ' Renombrar encabezados
+    wsMain.Cells(1, 1).Value = "Date"
+    wsMain.Cells(1, 2).Value = "department_id"
+    wsMain.Cells(1, 3).Value = "case_number"
+    wsMain.Cells(1, 4).Value = "age"
+    wsMain.Cells(1, 5).Value = "case_reason"
+    wsMain.Cells(1, 6).Value = "case_subreason"
+
+    ' Crear diccionario de mapeo
+    lastRow = wsDept.Cells(wsDept.Rows.Count, 1).End(xlUp).Row
+    For i = 2 To lastRow
+        deptDict(wsDept.Cells(i, 2).Value) = wsDept.Cells(i, 1).Value
+    Next i
+
+    ' Abrir archivo para escritura
+    Open sqlPath For Output As #sqlFile
+    insertHeader = "INSERT INTO CustomerService.case_reason (Date, department_id, case_number, age, case_reason, case_subreason) VALUES"
+    Print #sqlFile, insertHeader
+
+    ' Procesar filas
+    lastRow = wsMain.Cells(wsMain.Rows.Count, 1).End(xlUp).Row
+    rowCount = 0
+    For i = 2 To lastRow
+        Dim deptName As String, deptID As Variant
+        Dim caseNum As String, age As String
+        Dim reason As String, subreason As String
+        Dim formattedRow As String
+
+        rawDate = Trim(wsMain.Cells(i, 1).Text)
+        deptName = wsMain.Cells(i, 2).Value
+        deptID = IIf(deptDict.exists(deptName), deptDict(deptName), "NULL")
+        caseNum = wsMain.Cells(i, 3).Value
+        age = wsMain.Cells(i, 4).Value
+        reason = Replace(wsMain.Cells(i, 5).Value, "'", "''")
+        subreason = Replace(wsMain.Cells(i, 6).Value, "'", "''")
+
+        On Error Resume Next
+        caseDate = Format(CDate(rawDate), "yyyy-mm-dd")
+        If Err.Number <> 0 Then
+            caseDate = "NULL"
+            Err.Clear
+        End If
+        On Error GoTo 0
+
+        formattedRow = "('" & caseDate & "', " & IIf(deptID = "NULL", "NULL", deptID) & ", '" & caseNum & "', " & age & ", '" & reason & "', '" & subreason & "')"
+
+        If rowCount > 0 Then
+            Print #sqlFile, "," & formattedRow
+        Else
+            Print #sqlFile, formattedRow
+        End If
+
+        rowCount = rowCount + 1
+        If rowCount Mod blockSize = 0 And i < lastRow Then
+            Print #sqlFile, ";"
+            Print #sqlFile, ""
+            Print #sqlFile, insertHeader
+        End If
+    Next i
+
+    Print #sqlFile, ";"
+    Close #sqlFile
+    MsgBox "Archivo SQL generado en: " & sqlPath, vbInformation
+End Sub
+

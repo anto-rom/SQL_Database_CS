@@ -1,0 +1,197 @@
+SF Report No. 00OR6000004woOjMAI
+
+
+
+Option Explicit
+
+' ============================================
+' CONFIG
+' ============================================
+Private Const SHEET_MAIN As String = "Main"
+Private Const SHEET_AGENT As String = "agent"
+Private Const SHEET_DEPT As String = "department"
+Private Const TARGET_TABLE As String = "[CustomerService].[outbounds]"
+Private Const MAX_ROWS_PER_INSERT As Long = 1000
+Private Const BUTTON_NAME As String = "btnExportOutbounds"
+
+' ============================================
+' PUBLIC ENTRY POINT
+' ============================================
+Public Sub ExportOutboundsToSQL()
+    On Error GoTo FAIL
+    Dim ws As Worksheet, wsA As Worksheet, wsD As Worksheet
+    Set ws = ThisWorkbook.Worksheets(SHEET_MAIN)
+    Set wsA = ThisWorkbook.Worksheets(SHEET_AGENT)
+    Set wsD = ThisWorkbook.Worksheets(SHEET_DEPT)
+
+    ' Diccionarios de mapeo
+    Dim dictAgent As Object, dictDept As Object
+    Set dictAgent = BuildLookupDict(wsA, 2, 1) ' agent
+    Set dictDept = BuildLookupDict(wsD, 2, 1) ' department
+
+    Dim lastRow As Long: lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    Dim r As Long
+    Dim totalRows As Long, usedRows As Long
+    Dim missAgent As Long, missDept As Long, missDate As Long
+
+    ' Crear archivo SQL
+    Dim outPath As String
+    outPath = BuildDownloadsPath("outbounds_" & Format(Now, "yyyymmdd_hhnnss") & ".sql")
+    EnsureFolderExists GetFolderFromPath(outPath)
+
+    Dim fso As Object, ts As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set ts = fso.CreateTextFile(outPath, True, False)
+
+    ts.WriteLine "-- Generated on " & Format(Now, "yyyy-mm-dd HH:nn:ss")
+    ts.WriteLine "-- Target: " & TARGET_TABLE
+    ts.WriteLine
+    ts.WriteLine "INSERT INTO " & TARGET_TABLE & " ([agent_id],[Date],[department_id],[case_number])"
+    ts.WriteLine "VALUES"
+
+    Dim batchCount As Long
+    For r = 2 To lastRow
+        totalRows = totalRows + 1
+        Dim srcAgentKey As String, srcDeptKey As String, dateStr As String
+        Dim agentID As Variant, deptID As Variant, caseNumber As String
+
+        srcAgentKey = SanitizeKey(ws.Cells(r, 1).Value) ' Col A agente
+        dateStr = NormalizeDateYYYYMMDD(ws.Cells(r, 2).Value) ' Col B fecha
+        srcDeptKey = SanitizeKey(ws.Cells(r, 3).Value) ' Col C dept
+        caseNumber = Trim$(CStr(ws.Cells(r, 4).Value)) ' Col D Related Case
+
+        ' Validaciones
+        If srcAgentKey <> "" And dictAgent.Exists(srcAgentKey) Then
+            agentID = dictAgent(srcAgentKey)
+        Else
+            missAgent = missAgent + 1
+            GoTo CONTINUE_LOOP
+        End If
+
+        If srcDeptKey <> "" And dictDept.Exists(srcDeptKey) Then
+            deptID = dictDept(srcDeptKey)
+        Else
+            missDept = missDept + 1
+            GoTo CONTINUE_LOOP
+        End If
+
+        If dateStr = "" Then
+            missDate = missDate + 1
+            GoTo CONTINUE_LOOP
+        End If
+
+        ' case_number -> NULL si vacío o "-"
+        Dim caseValue As String
+        If caseNumber = "" Or caseNumber = "-" Then
+            caseValue = "NULL"
+        Else
+            caseValue = "'" & caseNumber & "'"
+        End If
+
+        ' Escribir fila
+        ts.Write "('" & agentID & "', '" & dateStr & "', '" & deptID & "', " & caseValue & ")"
+
+        batchCount = batchCount + 1
+        usedRows = usedRows + 1
+
+        If (batchCount >= MAX_ROWS_PER_INSERT) Or (r = lastRow) Then
+            ts.WriteLine ";"
+            ts.WriteLine
+            batchCount = 0
+        Else
+            ts.WriteLine ","
+        End If
+
+CONTINUE_LOOP:
+    Next r
+
+    ts.Close
+
+    MsgBox "Exportación completada." & vbCrLf & vbCrLf & _
+           "Archivo: " & outPath & vbCrLf & _
+           "Filas leídas: " & totalRows & vbCrLf & _
+           "Filas exportadas: " & usedRows & vbCrLf & _
+           "Sin agente: " & missAgent & " \n Sin departamento: " & missDept & " \n Sin fecha: " & missDate, _
+           vbInformation, "Outbounds » SQL"
+    Exit Sub
+
+FAIL:
+    MsgBox "Error: " & Err.Number & " - " & Err.Description, vbExclamation, "Outbounds » SQL"
+End Sub
+
+' ============================================
+' HELPERS
+' ============================================
+Private Function BuildLookupDict(ByVal ws As Worksheet, ByVal keyCol As Long, ByVal idCol As Long) As Object
+    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+    Dim lastRow As Long: lastRow = ws.Cells(ws.Rows.Count, keyCol).End(xlUp).Row
+    Dim r As Long, k As String, idv As Variant
+    For r = 2 To lastRow
+        k = SanitizeKey(ws.Cells(r, keyCol).Value)
+        If k <> "" Then
+            idv = ws.Cells(r, idCol).Value
+            If IsNumeric(idv) Then
+                d(k) = CLng(idv)
+            End If
+        End If
+    Next r
+    Set BuildLookupDict = d
+End Function
+
+Private Function SanitizeKey(ByVal v As Variant) As String
+    Dim s As String
+    On Error Resume Next
+    s = CStr(v)
+    On Error GoTo 0
+    s = Trim$(s)
+    s = LCase$(s)
+    SanitizeKey = s
+End Function
+
+Private Function NormalizeDateYYYYMMDD(ByVal v As Variant) As String
+    Dim s As String, dt As Date
+    If IsDate(v) Then
+        dt = CDate(v)
+        NormalizeDateYYYYMMDD = Format$(dt, "yyyy-mm-dd")
+        Exit Function
+    End If
+    s = Trim$(CStr(v))
+    If s = "" Then
+        NormalizeDateYYYYMMDD = ""
+        Exit Function
+    End If
+    If IsDate(s) Then
+        dt = CDate(s)
+        NormalizeDateYYYYMMDD = Format$(dt, "yyyy-mm-dd")
+        Exit Function
+    End If
+    NormalizeDateYYYYMMDD = ""
+End Function
+
+Private Function BuildDownloadsPath(ByVal fileName As String) As String
+    Dim root As String
+    root = Environ$("USERPROFILE")
+    If Right$(root, 1) = "\" Then
+        BuildDownloadsPath = root & "Downloads\" & fileName
+    Else
+        BuildDownloadsPath = root & "\Downloads\" & fileName
+    End If
+End Function
+
+Private Function GetFolderFromPath(ByVal fullPath As String) As String
+    Dim i As Long
+    i = InStrRev(fullPath, "\")
+    If i > 0 Then
+        GetFolderFromPath = Left$(fullPath, i - 1)
+    Else
+        GetFolderFromPath = fullPath
+    End If
+End Function
+
+Private Sub EnsureFolderExists(ByVal folderPath As String)
+    On Error Resume Next
+    If Len(Dir$(folderPath, vbDirectory)) = 0 Then
+        MkDir folderPath
+    End If
+    On Error GoTo 0
+End Sub

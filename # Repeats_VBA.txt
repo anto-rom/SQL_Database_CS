@@ -1,0 +1,500 @@
+# SF report no. 00OR600000C3F3nMAF
+
+----Module 1-----
+
+
+Option Explicit
+
+' Helper: robust check to convert different representations to 1/0
+Private Function ToPremiumFlag(v As Variant) As Long
+    ' Returns 1 if v represents TRUE/1, else 0
+    Dim s As String
+    If IsError(v) Then
+        ToPremiumFlag = 0
+        Exit Function
+    End If
+    If IsNull(v) Or IsEmpty(v) Then
+        ToPremiumFlag = 0
+        Exit Function
+    End If
+    If VarType(v) = vbBoolean Then
+        ToPremiumFlag = IIf(v = True, 1, 0)
+        Exit Function
+    End If
+    If IsNumeric(v) Then
+        ToPremiumFlag = IIf(CDbl(v) = 1, 1, 0)
+        Exit Function
+    End If
+    s = LCase(Trim(CStr(v)))
+    ToPremiumFlag = IIf(s = "true" Or s = "yes" Or s = "y" Or s = "1", 1, 0)
+End Function
+
+' Safe accessor for 2D variant arrays originated from a Range
+Private Function GetArrValSafe(ByRef a As Variant, ByVal r As Long, ByVal c As Long) As Variant
+    ' Returns Empty if out of bounds
+    On Error GoTo OOB
+    GetArrValSafe = a(r, c)
+    Exit Function
+OOB:
+    GetArrValSafe = Empty
+End Function
+
+Sub clean_data()
+    Dim wsSource As Worksheet, wsDest As Worksheet
+    Dim fd As FileDialog
+    Dim wbSource As Workbook, wbDest As Workbook
+    
+    Dim lastRow As Long, i As Long, destRow As Long
+    Dim arr As Variant, arrOut() As Variant
+    Dim fechaAyer As String
+    
+    ' Header detection helpers
+    Dim headerRow As Long: headerRow = 26
+    Dim startCol As Long, endCol As Long, lastHeaderCol As Long
+    Dim col As Long, hdr As String, hdrU As String
+    
+    ' Indexes within the captured block (start at 1..n)
+    Dim langIdx1 As Long, langIdx2 As Long
+    Dim subrIdx1 As Long, subrIdx2 As Long
+    Dim acctCtryIdx1 As Long, acctCtryIdx2 As Long
+    Dim nCols As Long
+    
+    ' Row level working variables
+    Dim caseNum As Variant, agentId As Variant, subject As Variant
+    Dim team1 As Variant, acc1 As Variant, age1 As Variant, prem1 As Variant, lang1 As Variant, subr1 As Variant
+    Dim team2 As Variant, acc2 As Variant, age2 As Variant, prem2 As Variant, lang2 As Variant, subr2 As Variant
+    Dim subreasonFinal As Variant, acctCountryVal As Variant
+    Dim premiumValue As Long
+    
+    ' --- Compute yesterday's date in yyyy-mm-dd ---
+    fechaAyer = Format(Date - 1, "yyyy-mm-dd")
+    
+    ' --- Pick source file ---
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "Selecciona el archivo descargado de Salesforce"
+        .Filters.Clear
+        .Filters.Add "Archivos Excel", "*.xls*"
+        If .Show = False Then Exit Sub
+    End With
+    
+    Application.ScreenUpdating = False
+    
+    Set wbDest = ThisWorkbook
+    Set wsDest = wbDest.Sheets("Main")
+    wsDest.Cells.Clear
+    
+    Set wbSource = Workbooks.Open(fd.SelectedItems(1), ReadOnly:=True)
+    Set wsSource = wbSource.Sheets(1)
+    
+    ' --- Read block starting at B26 (adjust if source changes) ---
+    lastRow = wsSource.Cells(wsSource.Rows.Count, "B").End(xlUp).Row
+    If lastRow < headerRow Then
+        MsgBox "El archivo fuente no contiene datos a partir de B26.", vbExclamation
+        GoTo Cleanup
+    End If
+    
+    ' Determine dynamically the last header column in row 26 (from the right)
+    startCol = wsSource.Range("B" & headerRow).Column
+    lastHeaderCol = wsSource.Cells(headerRow, wsSource.Columns.Count).End(xlToLeft).Column
+    ' Ensure endCol is at least startCol
+    endCol = IIf(lastHeaderCol >= startCol, lastHeaderCol, startCol)
+    
+    ' Capture B26 : <last header col> for all rows down to lastRow
+    arr = wsSource.Range(wsSource.Cells(headerRow, startCol), wsSource.Cells(lastRow, endCol)).Value
+    
+    ' --- Final headers in destination (11 columns) ---
+    Dim headers As Variant, hdr2D() As Variant, j As Long
+    headers = Array("case_number", "agent_id", "subject", "department_id", "account_name", "age", "premium", "language", "subreason", "account_country", "Date")
+    ReDim hdr2D(1 To 1, 1 To 11)
+    For j = 0 To 10
+        hdr2D(1, j + 1) = headers(j)
+    Next j
+    wsDest.Range("A1").Resize(1, 11).Value = hdr2D
+    
+    ' --- Prepare output array ---
+    ReDim arrOut(1 To UBound(arr, 1) - 1, 1 To 11) ' -1 because first row is headers
+    destRow = 1
+    
+    ' --- Detect columns by header names in row 26 ---
+    langIdx1 = 0: langIdx2 = 0
+    subrIdx1 = 0: subrIdx2 = 0
+    acctCtryIdx1 = 0: acctCtryIdx2 = 0
+    
+    For col = startCol To endCol
+        hdr = CStr(wsSource.Cells(headerRow, col).Value)
+        hdrU = UCase(Trim(hdr))
+        
+        ' Identify any column that contains the word LANGUAGE
+        If InStr(1, hdrU, "LANGUAGE", vbTextCompare) > 0 Then
+            If langIdx1 = 0 Then
+                langIdx1 = col - startCol + 1
+            ElseIf langIdx2 = 0 Then
+                langIdx2 = col - startCol + 1
+            End If
+        End If
+        
+        ' Identify columns named "Case Sub-Reason" (handle hyphen / spaces variants)
+        If (InStr(1, hdrU, "CASE SUB-REASON", vbTextCompare) > 0) Or _
+           (InStr(1, hdrU, "CASE SUB REASON", vbTextCompare) > 0) Then
+            If subrIdx1 = 0 Then
+                subrIdx1 = col - startCol + 1
+            ElseIf subrIdx2 = 0 Then
+                subrIdx2 = col - startCol + 1
+            End If
+        End If
+        
+        ' Identify columns named "Account Country" (handle variants)
+        If (InStr(1, hdrU, "ACCOUNT COUNTRY", vbTextCompare) > 0) Or _
+           (InStr(1, hdrU, "ACCOUNT COUNTRY NAME", vbTextCompare) > 0) Or _
+           (InStr(1, hdrU, "COUNTRY", vbTextCompare) > 0 And InStr(1, hdrU, "ACCOUNT", vbTextCompare) > 0) Then
+            If acctCtryIdx1 = 0 Then
+                acctCtryIdx1 = col - startCol + 1
+            ElseIf acctCtryIdx2 = 0 Then
+                acctCtryIdx2 = col - startCol + 1
+            End If
+        End If
+    Next col
+    
+    ' Validate required columns
+    If langIdx1 = 0 Then
+        MsgBox "No se encontró la columna 'Language' en los encabezados (fila 26). Revisa el reporte.", vbCritical
+        GoTo Cleanup
+    End If
+    If subrIdx1 = 0 Then
+        MsgBox "No se encontró ninguna columna 'Case Sub-Reason' en los encabezados (fila 26). Revisa el reporte.", vbCritical
+        GoTo Cleanup
+    End If
+    
+    ' Clamp detected indexes to the actual number of columns captured
+    nCols = UBound(arr, 2)
+    If langIdx1 > nCols Then langIdx1 = 0
+    If langIdx2 > nCols Then langIdx2 = 0
+    If subrIdx1 > nCols Then subrIdx1 = 0
+    If subrIdx2 > nCols Then subrIdx2 = 0
+    If acctCtryIdx1 > nCols Then acctCtryIdx1 = 0
+    If acctCtryIdx2 > nCols Then acctCtryIdx2 = 0
+    
+    ' --- Main loop (skip headers: start at i=2) ---
+    For i = 2 To UBound(arr, 1)
+        ' Base columns from the array (relative to B..endCol block)
+        caseNum = GetArrValSafe(arr, i, 1)
+        agentId = GetArrValSafe(arr, i, 2)
+        subject = GetArrValSafe(arr, i, 3)
+        
+        ' First set (positions as in original logic)
+        team1 = GetArrValSafe(arr, i, 5)
+        acc1 = GetArrValSafe(arr, i, 6)
+        age1 = GetArrValSafe(arr, i, 7)
+        prem1 = GetArrValSafe(arr, i, 8)
+        lang1 = IIf(langIdx1 > 0, GetArrValSafe(arr, i, langIdx1), Empty)
+        subr1 = IIf(subrIdx1 > 0, GetArrValSafe(arr, i, subrIdx1), Empty)
+        
+        ' Second set
+        team2 = GetArrValSafe(arr, i, 11)
+        acc2 = GetArrValSafe(arr, i, 12)
+        age2 = GetArrValSafe(arr, i, 13)
+        prem2 = GetArrValSafe(arr, i, 14)
+        lang2 = IIf(langIdx2 > 0, GetArrValSafe(arr, i, langIdx2), "")
+        subr2 = IIf(subrIdx2 > 0, GetArrValSafe(arr, i, subrIdx2), "")
+        
+        ' Account Country value (prefer first detected, else second)
+        If acctCtryIdx1 > 0 Then
+            acctCountryVal = GetArrValSafe(arr, i, acctCtryIdx1)
+        Else
+            acctCountryVal = Empty
+        End If
+        If (IsEmpty(acctCountryVal) Or acctCountryVal = "") And acctCtryIdx2 > 0 Then
+            acctCountryVal = GetArrValSafe(arr, i, acctCtryIdx2)
+        End If
+        If IsEmpty(acctCountryVal) Then acctCountryVal = ""
+        
+        ' Skip totals/summary rows (first col not numeric)
+        If Not IsNumeric(caseNum) Then
+            GoTo SkipRow
+        End If
+        
+        ' Choose final subreason (prefer first, else second)
+        If Not IsEmpty(subr1) And subr1 <> "" Then
+            subreasonFinal = subr1
+        ElseIf Not IsEmpty(subr2) And subr2 <> "" Then
+            subreasonFinal = subr2
+        Else
+            subreasonFinal = ""
+        End If
+        
+        ' >>> Forward-fill for subreason: if empty, take previous row's subreason
+        If (IsEmpty(subreasonFinal) Or subreasonFinal = "") And destRow > 1 Then
+            subreasonFinal = arrOut(destRow - 1, 9)
+        End If
+        
+        ' Output preference: set1 if team1 present; else set2; else fallback
+        If Not IsEmpty(team1) And team1 <> "" Then
+            premiumValue = ToPremiumFlag(prem1)
+            
+            arrOut(destRow, 1) = caseNum
+            arrOut(destRow, 2) = agentId
+            arrOut(destRow, 3) = subject
+            arrOut(destRow, 4) = team1
+            arrOut(destRow, 5) = acc1
+            arrOut(destRow, 6) = age1
+            arrOut(destRow, 7) = premiumValue
+            arrOut(destRow, 8) = lang1
+            arrOut(destRow, 9) = subreasonFinal
+            arrOut(destRow, 10) = acctCountryVal
+            arrOut(destRow, 11) = fechaAyer
+            destRow = destRow + 1
+            
+        ElseIf Not IsEmpty(team2) And team2 <> "" Then
+            premiumValue = ToPremiumFlag(prem2)
+            
+            arrOut(destRow, 1) = caseNum
+            arrOut(destRow, 2) = agentId
+            arrOut(destRow, 3) = subject
+            arrOut(destRow, 4) = team2
+            arrOut(destRow, 5) = acc2
+            arrOut(destRow, 6) = age2
+            arrOut(destRow, 7) = premiumValue
+            arrOut(destRow, 8) = lang2
+            arrOut(destRow, 9) = subreasonFinal
+            arrOut(destRow, 10) = acctCountryVal
+            arrOut(destRow, 11) = fechaAyer
+            destRow = destRow + 1
+            
+        ElseIf ((IsEmpty(caseNum) Or caseNum = "") Or (IsEmpty(agentId) Or agentId = "") Or (IsEmpty(subject) Or subject = "")) And _
+               (Not IsEmpty(GetArrValSafe(arr, i, 4)) Or Not IsEmpty(GetArrValSafe(arr, i, 5)) Or Not IsEmpty(GetArrValSafe(arr, i, 6)) Or _
+                Not IsEmpty(GetArrValSafe(arr, i, 7)) Or Not IsEmpty(GetArrValSafe(arr, i, 8)) Or Not IsEmpty(GetArrValSafe(arr, i, 9))) Then
+            ' Fallback: fill first 3 columns from previous row when missing
+            If (IsEmpty(caseNum) Or caseNum = "") And destRow > 1 Then
+                arrOut(destRow, 1) = arrOut(destRow - 1, 1)
+            Else
+                arrOut(destRow, 1) = caseNum
+            End If
+            
+            If (IsEmpty(agentId) Or agentId = "") And destRow > 1 Then
+                arrOut(destRow, 2) = arrOut(destRow - 1, 2)
+            Else
+                arrOut(destRow, 2) = agentId
+            End If
+            
+            If (IsEmpty(subject) Or subject = "") And destRow > 1 Then
+                arrOut(destRow, 3) = arrOut(destRow - 1, 3)
+            Else
+                arrOut(destRow, 3) = subject
+            End If
+            
+            ' Keep fallback mapping BUT enforce detected columns
+            arrOut(destRow, 4) = GetArrValSafe(arr, i, 4)
+            arrOut(destRow, 5) = GetArrValSafe(arr, i, 5)
+            arrOut(destRow, 6) = GetArrValSafe(arr, i, 6)
+            arrOut(destRow, 7) = ToPremiumFlag(GetArrValSafe(arr, i, 7))
+            arrOut(destRow, 8) = IIf(langIdx1 > 0, GetArrValSafe(arr, i, langIdx1), "")
+            
+            Dim subrTmp As Variant
+            If subrIdx1 > 0 And Not IsEmpty(GetArrValSafe(arr, i, subrIdx1)) And GetArrValSafe(arr, i, subrIdx1) <> "" Then
+                subrTmp = GetArrValSafe(arr, i, subrIdx1)
+            ElseIf subrIdx2 > 0 And Not IsEmpty(GetArrValSafe(arr, i, subrIdx2)) And GetArrValSafe(arr, i, subrIdx2) <> "" Then
+                subrTmp = GetArrValSafe(arr, i, subrIdx2)
+            Else
+                subrTmp = ""
+            End If
+            
+            ' >>> Forward-fill for subreason in fallback
+            If (IsEmpty(subrTmp) Or subrTmp = "") And destRow > 1 Then
+                subrTmp = arrOut(destRow - 1, 9)
+            End If
+            
+            arrOut(destRow, 9) = subrTmp
+            arrOut(destRow, 10) = acctCountryVal
+            arrOut(destRow, 11) = fechaAyer
+            destRow = destRow + 1
+        End If
+        
+SkipRow:
+    Next i
+    
+    ' --- Dump results ---
+    If destRow > 1 Then
+        wsDest.Range("A2").Resize(destRow - 1, 11).Value = arrOut
+    End If
+    
+    ' --- Final fill of gaps ---
+    Dim lastRowDest As Long, c As Long
+    lastRowDest = wsDest.Cells(wsDest.Rows.Count, "A").End(xlUp).Row
+    
+    ' Fill columns 1..3 from previous when empty (as you had)
+    For i = 2 To lastRowDest
+        For c = 1 To 3
+            If IsEmpty(wsDest.Cells(i, c)) Or wsDest.Cells(i, c).Value = "" Then
+                wsDest.Cells(i, c).Value = wsDest.Cells(i - 1, c).Value
+            End If
+        Next c
+    Next i
+    
+    ' >>> Forward-fill for subreason column (col 9)
+    For i = 2 To lastRowDest
+        If IsEmpty(wsDest.Cells(i, 9)) Or wsDest.Cells(i, 9).Value = "" Then
+            wsDest.Cells(i, 9).Value = wsDest.Cells(i - 1, 9).Value
+        End If
+    Next i
+
+Cleanup:
+    On Error Resume Next
+    If Not wbSource Is Nothing Then wbSource.Close False
+    Application.ScreenUpdating = True
+    On Error GoTo 0
+    
+    If destRow > 1 Then
+        MsgBox "Datos limpios. 'Language', 'Case Sub-Reason' y 'Account Country' provienen de sus columnas de encabezado; 'subreason' se rellena con el valor anterior cuando está vacío.", vbInformation
+    End If
+End Sub
+
+
+-----Module 2---- 
+
+
+Sub MapearYExportarSQL()
+    Dim wsMain As Worksheet, wsAgent As Worksheet, wsDept As Worksheet
+    Dim dictAgent As Object, dictDept As Object
+    Dim lastRow As Long, i As Long
+    Dim orderedHeaders As Variant
+    Dim colIndex As Object ' header name -> column index in wsMain
+    Dim sqlFile As String, fso As Object, ts As Object
+    Dim fila As Long, bloque As Long, totalFilas As Long
+    Dim valuesBlock As String, insertHeader As String, filaSQL As String
+    Dim chunkSize As Long: chunkSize = 900
+    
+    Set wsMain = ThisWorkbook.Sheets("Main")
+    Set wsAgent = ThisWorkbook.Sheets("agent")
+    Set wsDept = ThisWorkbook.Sheets("department")
+    Set dictAgent = CreateObject("Scripting.Dictionary")
+    Set dictDept = CreateObject("Scripting.Dictionary")
+    Set colIndex = CreateObject("Scripting.Dictionary")
+    
+    ' --- Build dictionaries from mapping sheets ---
+    ' agent: column A = agent_id, column B = agent external key
+    lastRow = wsAgent.Cells(wsAgent.Rows.Count, "A").End(xlUp).Row
+    For i = 2 To lastRow
+        dictAgent(CStr(wsAgent.Cells(i, 2).Value)) = wsAgent.Cells(i, 1).Value
+    Next i
+    
+    ' department: column A = department_id, column B = department external key/name
+    lastRow = wsDept.Cells(wsDept.Rows.Count, "A").End(xlUp).Row
+    For i = 2 To lastRow
+        dictDept(CStr(wsDept.Cells(i, 2).Value)) = wsDept.Cells(i, 1).Value
+    Next i
+    
+    ' --- Detect columns by header names (robust to gaps) ---
+    ' Use the exact header names produced by clean_data
+    orderedHeaders = Array("case_number", "agent_id", "subject", "department_id", "account_name", "age", "premium", "language", "subreason", "account_country", "Date")
+    
+    Dim lastHeaderCol As Long, c As Long, h As Variant, hdr As String
+    lastHeaderCol = wsMain.Cells(1, wsMain.Columns.Count).End(xlToLeft).Column
+    ' Scan row 1 from 1 to lastHeaderCol and map names to columns (case-insensitive)
+    For c = 1 To lastHeaderCol
+        hdr = Trim(CStr(wsMain.Cells(1, c).Value))
+        If Len(hdr) > 0 Then
+            If Not colIndex.Exists(UCase$(hdr)) Then colIndex.Add UCase$(hdr), c
+        End If
+    Next c
+    
+    ' Ensure all required headers exist
+    For Each h In orderedHeaders
+        If Not colIndex.Exists(UCase$(h)) Then
+            MsgBox "Header not found in 'Main': " & CStr(h), vbCritical
+            Exit Sub
+        End If
+    Next h
+    
+    ' --- Apply mapping to Main (IDs) ---
+    lastRow = wsMain.Cells(wsMain.Rows.Count, "A").End(xlUp).Row
+    
+    Dim colAgent As Long, colDept As Long
+    colAgent = colIndex(UCase$("agent_id"))
+    colDept = colIndex(UCase$("department_id"))
+    
+    For i = 2 To lastRow
+        ' agent_id
+        Dim agentKey As String
+        agentKey = CStr(wsMain.Cells(i, colAgent).Value)
+        If dictAgent.Exists(agentKey) Then
+            wsMain.Cells(i, colAgent).Value = dictAgent(agentKey)
+        Else
+            ' Preference from your saved spec: export NULL for unmapped IDs
+            wsMain.Cells(i, colAgent).Value = ""  ' will be written as NULL below
+            ' If you prefer 673 instead, replace with: wsMain.Cells(i, colAgent).Value = 673
+        End If
+        
+        ' department_id
+        Dim deptKey As String
+        deptKey = CStr(wsMain.Cells(i, colDept).Value)
+        If dictDept.Exists(deptKey) Then
+            wsMain.Cells(i, colDept).Value = dictDept(deptKey)
+        Else
+            wsMain.Cells(i, colDept).Value = ""  ' will be written as NULL below
+        End If
+    Next i
+    
+    ' --- Create SQL file in Downloads ---
+    sqlFile = Environ$("USERPROFILE") & "\Downloads\repeats_export.sql"
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set ts = fso.CreateTextFile(sqlFile, True, True) ' overwrite, Unicode
+    
+    totalFilas = lastRow - 1
+    bloque = 0
+    
+    ' INSERT header is built with ordered headers to guarantee inclusion of account_country
+    Dim headerText As String
+    headerText = "[" & Join(orderedHeaders, "], [") & "]"
+    
+    For fila = 2 To lastRow Step chunkSize
+        bloque = bloque + 1
+        insertHeader = "INSERT INTO CustomerService.repeats (" & headerText & ") VALUES" & vbCrLf
+        ts.Write insertHeader
+        
+        valuesBlock = ""
+        Dim filaTo As Long: filaTo = Application.Min(fila + chunkSize - 1, lastRow)
+        
+        For i = fila To filaTo
+            filaSQL = "("
+            Dim idx As Long, val As Variant, col As Long, nameH As String
+            
+            For idx = LBound(orderedHeaders) To UBound(orderedHeaders)
+                nameH = orderedHeaders(idx)
+                col = colIndex(UCase$(nameH))
+                val = wsMain.Cells(i, col).Value
+                
+                ' For numeric IDs unmapped, export as NULL (no quotes)
+                If (UCase$(nameH) = "AGENT_ID" Or UCase$(nameH) = "DEPARTMENT_ID") And (IsEmpty(val) Or Trim(CStr(val)) = "") Then
+                    filaSQL = filaSQL & "NULL"
+                Else
+                    ' Escape single quotes for SQL
+                    filaSQL = filaSQL & "'" & Replace(CStr(val), "'", "''") & "'"
+                End If
+                
+                If idx < UBound(orderedHeaders) Then filaSQL = filaSQL & ", "
+            Next idx
+            
+                       filaSQL = filaSQL & ")"
+            If i < filaTo Then
+                filaSQL = filaSQL & "," & vbCrLf
+            End If
+            valuesBlock = valuesBlock & filaSQL
+        Next i
+        
+        ts.Write valuesBlock & ";" & vbCrLf & vbCrLf
+    Next fila
+    
+    ts.Close
+    MsgBox "Archivo SQL generado en: " & sqlFile, vbInformation
+End Sub
+
+
+---------Module 3-----------
+
+Sub EjecutarTodo()
+    ' Ejecuta primero la macro de limpieza y normalización (con subject, relleno de huecos y columna Date)
+    Call clean_data
+    ' Después ejecuta la macro de mapeo y exportación SQL
+    Call MapearYExportarSQL
+End Sub

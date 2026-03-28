@@ -1,0 +1,298 @@
+SF Report no: 00OR600000BkWzYMAV
+
+Option Explicit
+
+Public Sub Generate_Agent_Transfer_SQL()
+    Dim wsMain As Worksheet, wsDept As Worksheet, wsAgent As Worksheet
+    Dim lastRow As Long, i As Long
+    Dim dictAgent As Object, dictDept As Object
+    Dim dateVal As Variant, agentName As String, caseText As String
+    Dim teamName As String, newTeamName As String
+    Dim agentId As Variant, deptId As Variant, newDeptId As Variant
+    Dim keepRow() As Boolean, keptCount As Long
+    Dim skippedInternal As Long, skippedMissingDE As Long
+    Dim BLOCK_SIZE As Long: BLOCK_SIZE = 900
+    
+    On Error GoTo FailSafe
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    
+    ' == Hojas ==
+    Set wsMain = ThisWorkbook.Worksheets("Main")
+    Set wsDept = ThisWorkbook.Worksheets("department")
+    Set wsAgent = ThisWorkbook.Worksheets("agent")
+    
+    ' == Diccionarios de mapeo ==
+    Set dictAgent = CreateObject("Scripting.Dictionary")
+    Set dictDept = CreateObject("Scripting.Dictionary")
+    dictAgent.CompareMode = 1 ' TextCompare
+    dictDept.CompareMode = 1  ' TextCompare
+    
+    ' Cargar agentes: A=agent_id, B=agent_name
+    Dim r As Long, lastA As Long
+    lastA = wsAgent.Cells(wsAgent.Rows.Count, "A").End(xlUp).Row
+    For r = 2 To lastA
+        If Not IsEmpty(wsAgent.Cells(r, 1).Value) And Not IsEmpty(wsAgent.Cells(r, 2).Value) Then
+            dictAgent(Normalize(CStr(wsAgent.Cells(r, 2).Value))) = wsAgent.Cells(r, 1).Value
+        End If
+    Next r
+    
+    ' Cargar departamentos: A=department_id, B=department_name
+    Dim lastD As Long
+    lastD = wsDept.Cells(wsDept.Rows.Count, "A").End(xlUp).Row
+    For r = 2 To lastD
+        If Not IsEmpty(wsDept.Cells(r, 1).Value) And Not IsEmpty(wsDept.Cells(r, 2).Value) Then
+            dictDept(Normalize(CStr(wsDept.Cells(r, 2).Value))) = wsDept.Cells(r, 1).Value
+        End If
+    Next r
+    
+    ' == Renombrar headers ==
+    wsMain.Range("A1").Value = "Date"
+    wsMain.Range("B1").Value = "agent_id"
+    wsMain.Range("C1").Value = "case_number"
+    wsMain.Range("D1").Value = "department_id"
+    wsMain.Range("E1").Value = "new_department"
+    
+    ' == Recorrer filas ==
+    lastRow = wsMain.Cells(wsMain.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then GoTo GracefulEnd ' nada que procesar
+    
+    ReDim keepRow(2 To lastRow)
+    keptCount = 0
+    skippedInternal = 0
+    skippedMissingDE = 0
+    
+    For i = 2 To lastRow
+        ' A: Date -> yyyy-mm-dd (o NULL si no es válida)
+        dateVal = wsMain.Cells(i, 1).Value
+        wsMain.Cells(i, 1).Value = FormatDateForSql(dateVal)
+        
+        ' B: agent_id desde Edited By (nombre)
+        agentName = CStr(wsMain.Cells(i, 2).Value)
+        agentId = MapAgentId(agentName, dictAgent)
+        If IsNull(agentId) Then
+            wsMain.Cells(i, 2).Value = Null  ' exportará como NULL
+        Else
+            wsMain.Cells(i, 2).Value = CLng(agentId)
+        End If
+        
+        ' C: case_number -> conservar texto tal como se ve (p.ej. "02403325")
+        caseText = CStr(wsMain.Cells(i, 3).Text)
+        wsMain.Cells(i, 3).Value = caseText
+        
+        ' D/E: dept ids desde nombres en Team/New Value
+        teamName = CStr(wsMain.Cells(i, 4).Value)
+        newTeamName = CStr(wsMain.Cells(i, 5).Value)
+        
+        deptId = MapDeptId(teamName, dictDept)
+        newDeptId = MapDeptId(newTeamName, dictDept)
+        
+        If IsNull(deptId) Then
+            wsMain.Cells(i, 4).Value = Null
+        Else
+            wsMain.Cells(i, 4).Value = CLng(deptId)
+        End If
+        
+        If IsNull(newDeptId) Then
+            wsMain.Cells(i, 5).Value = Null
+        Else
+            wsMain.Cells(i, 5).Value = CLng(newDeptId)
+        End If
+        
+        ' ==== NUEVA REGLA ====
+        ' Si D o E no tienen valor (o son "-"), eliminar fila (no exportar)
+        If IsNull(deptId) Or IsNull(newDeptId) Then
+            keepRow(i) = False
+            skippedMissingDE = skippedMissingDE + 1
+        ' Omitir si D == E (transfer interna)
+        ElseIf CLng(deptId) = CLng(newDeptId) Then
+            keepRow(i) = False
+            skippedInternal = skippedInternal + 1
+        Else
+            keepRow(i) = True
+            keptCount = keptCount + 1
+        End If
+    Next i
+    
+    ' == Exportar a SQL ==
+    If keptCount > 0 Then
+        ExportToSql wsMain, keepRow, BLOCK_SIZE
+    End If
+    
+GracefulEnd:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    
+    MsgBox "Proceso completado." & vbCrLf & _
+           "Filas exportadas: " & keptCount & vbCrLf & _
+           "Omitidas (D/E sin valor o '-'): " & skippedMissingDE & vbCrLf & _
+           "Omitidas (transfer internas D=E): " & skippedInternal, vbInformation
+    Exit Sub
+
+FailSafe:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    MsgBox "Se produjo un error: " & Err.Description, vbExclamation
+End Sub
+
+' =======================
+' Funciones auxiliares
+' =======================
+
+Private Function Normalize(ByVal s As String) As String
+    ' Trim, quitar saltos de línea y normalizar espacios
+    Dim t As String
+    t = Trim$(Replace(Replace(s, vbCr, ""), vbLf, ""))
+    If t = "-" Then t = "" ' tratar "-" como vacío
+    Normalize = t
+End Function
+
+Private Function FormatDateForSql(ByVal v As Variant) As Variant
+    On Error GoTo BadDate
+    If IsDate(v) Then
+        FormatDateForSql = Format$(CDate(v), "yyyy-mm-dd")
+    Else
+        Dim s As String: s = CStr(v)
+        If IsDate(s) Then
+            FormatDateForSql = Format$(CDate(s), "yyyy-mm-dd")
+        Else
+            FormatDateForSql = Null
+        End If
+    End If
+    Exit Function
+BadDate:
+    FormatDateForSql = Null
+End Function
+
+Private Function MapAgentId(ByVal agentName As String, ByVal dict As Object) As Variant
+    Dim key As String: key = Normalize(agentName)
+    If key = "" Then
+        MapAgentId = Null
+    ElseIf dict.Exists(key) Then
+        MapAgentId = dict(key)
+    Else
+        MapAgentId = Null
+    End If
+End Function
+
+Private Function MapDeptId(ByVal deptName As String, ByVal dict As Object) As Variant
+    Dim key As String: key = Normalize(deptName)
+    If key = "" Then
+        MapDeptId = Null
+    ElseIf dict.Exists(key) Then
+        MapDeptId = dict(key)
+    Else
+        MapDeptId = Null
+    End If
+End Function
+
+Private Function SqlStrOrNull(ByVal s As Variant) As String
+    If IsNull(s) Or Len(Trim$(CStr(s))) = 0 Then
+        SqlStrOrNull = "NULL"
+    Else
+        SqlStrOrNull = "'" & Replace(CStr(s), "'", "''") & "'"
+    End If
+End Function
+
+Private Function SqlNumOrNull(ByVal v As Variant) As String
+    If IsNull(v) Or v = "" Then
+        SqlNumOrNull = "NULL"
+    Else
+        SqlNumOrNull = CStr(v)
+    End If
+End Function
+
+Private Function GetDownloadsPath() As String
+    ' Soporta Windows y macOS
+    Dim p1 As String, p2 As String
+    p1 = Environ$("USERPROFILE")
+    If Len(p1) > 0 Then
+        p1 = p1 & "\Downloads\"
+        If Dir$(p1, vbDirectory) <> "" Then
+            GetDownloadsPath = p1
+            Exit Function
+        End If
+    End If
+    p2 = Environ$("HOME")
+    If Len(p2) > 0 Then
+        p2 = p2 & "/Downloads/"
+        If Dir$(p2, vbDirectory) <> "" Then
+            GetDownloadsPath = p2
+            Exit Function
+        End If
+    End If
+    ' Fallback: carpeta del workbook
+    GetDownloadsPath = ThisWorkbook.Path & Application.PathSeparator
+End Function
+
+Private Sub ExportToSql(ByVal ws As Worksheet, ByRef keepRow() As Boolean, ByVal BLOCK_SIZE As Long)
+    Dim lastRow As Long, i As Long, countKept As Long
+    Dim fileNum As Integer, outPath As String, fName As String
+    Dim header As String, line As String
+    Dim written As Long, inBlock As Long
+    
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    
+    ' Contar filas a exportar
+    For i = LBound(keepRow) To UBound(keepRow)
+        If keepRow(i) Then countKept = countKept + 1
+    Next i
+    If countKept = 0 Then Exit Sub
+    
+    fName = "agent_transfer_" & Format$(Now, "yyyymmdd_Hhnnss") & ".sql"
+    outPath = GetDownloadsPath() & fName
+    
+    fileNum = FreeFile
+    Open outPath For Output As #fileNum
+    
+    header = "INSERT INTO CustomerService.agent_transfer (Date, agent_id, case_number, department_id, new_department) VALUES"
+    
+    written = 0
+    inBlock = 0
+    
+    Print #fileNum, header
+    
+    For i = 2 To lastRow
+        If keepRow(i) Then
+            Dim vDate As Variant, vAgent As Variant, vCase As Variant, vDept As Variant, vNewDept As Variant
+            vDate = ws.Cells(i, 1).Value       ' "yyyy-mm-dd" o Null
+            vAgent = ws.Cells(i, 2).Value      ' num o Null
+            vCase = ws.Cells(i, 3).Value       ' texto
+            vDept = ws.Cells(i, 4).Value       ' num o Null
+            vNewDept = ws.Cells(i, 5).Value    ' num o Null
+            
+            line = "(" & _
+                   IIf(IsNull(vDate), "NULL", "'" & CStr(vDate) & "'") & ", " & _
+                   SqlNumOrNull(vAgent) & ", " & _
+                   SqlStrOrNull(vCase) & ", " & _
+                   SqlNumOrNull(vDept) & ", " & _
+                   SqlNumOrNull(vNewDept) & ")"
+            
+            inBlock = inBlock + 1
+            written = written + 1
+            
+            Dim isLastOfBlock As Boolean, isLastOverall As Boolean
+            isLastOfBlock = (inBlock = BLOCK_SIZE)
+            isLastOverall = (written = countKept)
+            
+            If isLastOfBlock Or isLastOverall Then
+                Print #fileNum, line & ";"
+                inBlock = 0
+                If Not isLastOverall Then
+                    Print #fileNum, header
+                End If
+            Else
+                Print #fileNum, line & ","
+            End If
+        End If
+    Next i
+    
+    Close #fileNum
+End Sub
+
+
+

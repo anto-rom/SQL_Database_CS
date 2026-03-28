@@ -1,0 +1,85 @@
+Calendar_Planet = 
+VAR MinDate = DATE(2020,1,1)
+VAR MaxDate = DATE(2030,12,31)
+
+VAR Base =
+    CALENDAR(MinDate, MaxDate)
+
+// === 1. Compute the first Thursday of each year ===
+VAR AddFirstThursday =
+    ADDCOLUMNS(
+        Base,
+        "Year", YEAR([Date]),
+
+        // First day of the current year
+        "Jan1",
+            DATE(YEAR([Date]), 1, 1),
+
+        // Offset to Thursday (Thu = 0)
+        "OffsetToThu",
+            MOD( WEEKDAY(DATE(YEAR([Date]),1,1), 2) - 4, 7 ),
+
+        // FIRST THURSDAY OF THE YEAR (Planet Week 1 starts here)
+        "FirstThursday",
+            DATE(YEAR([Date]),1,1)
+            - MOD( WEEKDAY(DATE(YEAR([Date]),1,1),2) - 4, 7 )
+    )
+
+// === 2. Compute WeekStart & WeekEnd based on Thursday–Wednesday ===
+VAR AddWeekStartEnd =
+    ADDCOLUMNS(
+        AddFirstThursday,
+
+        // Day offset in Planet week (Thu=0 ... Wed=6)
+        "DayOfWeek_ThuStart",
+            MOD( WEEKDAY([Date], 2) - 4, 7 ),
+
+        // WeekStart = Thursday of the week containing [Date]
+        "WeekStart",
+            [Date] - MOD( WEEKDAY([Date], 2) - 4, 7 ),
+
+        // WeekEnd = WeekStart + 6
+        "WeekEnd",
+            ([Date] - MOD( WEEKDAY([Date], 2) - 4, 7 )) + 6
+    )
+
+// === 3. Compute PlanetWeekNumber ===
+VAR AddWeekNumber =
+    ADDCOLUMNS(
+        AddWeekStartEnd,
+        "PlanetWeekNumber",
+            VAR FirstThu = [FirstThursday]
+            VAR WS = [WeekStart]
+            RETURN 1 + INT( DIVIDE( WS - FirstThu, 7 ) )
+    )
+
+// === 4. Add standard calendar (months, quarters, etc.) ===
+VAR AddCalendarInfo =
+    ADDCOLUMNS(
+        AddWeekNumber,
+
+        // Standard calendar attributes
+        "CalendarYear", YEAR([Date]),
+        "CalendarMonthNumber", MONTH([Date]),
+        "CalendarMonthName", FORMAT([Date], "MMMM", "en-US"),
+        "CalendarMonthShort", FORMAT([Date], "MMM", "en-US"),
+        "MonthYear", FORMAT([Date], "MMM yyyy", "en-US"),
+        "MonthYearSort", EOMONTH([Date], 0),
+        "Quarter", "Q" & QUARTER([Date])
+    )
+
+// === 5. Build the human-readable WeekLabel ===
+VAR Final =
+    ADDCOLUMNS(
+        AddCalendarInfo,
+        "WeekLabel",
+            "Week " &
+            FORMAT([PlanetWeekNumber], "00") &
+            " (" &
+            FORMAT([WeekStart], "dd MMM yy", "en-US") &
+            " - " &
+            FORMAT([WeekEnd],   "dd MMM yy", "en-US") &
+            ")"
+    )
+
+RETURN Final

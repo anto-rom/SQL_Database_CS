@@ -1,0 +1,539 @@
+SF Report No. 00OR600000Boa5BMAR
+
+Option Explicit
+' ===========================================================
+' Hospitality_AHT_ABA (v2)
+' Autor: Antonio Romero
+' Fecha: 2025-09-21
+'' ===========================================================
+Public Sub Hospitality_Export_AHT_ABA()
+    Dim t0 As Double: t0 = Timer
+    Dim appCalc As XlCalculation
+    Dim wsData As Worksheet, wsDept As Worksheet, wsAgent As Worksheet, wsLang As Worksheet
+    Dim dDept As Object, dAgent As Object, dLang As Object
+    Dim lastRow As Long
+    Dim i As Long
+    Dim unmatched As Collection
+    Dim sqlPath As String, outFile As String
+    Dim outCount As Long, blockSize As Long: blockSize = 900
+    Dim createdUnmatched As Boolean
+    Dim cntUnmatched As Long
+    Dim missingMaps As String
+    Dim unmatchedSheetName As String
+
+    On Error GoTo EH
+
+    ' ---------- Performance ----------
+    Application.ScreenUpdating = False
+    appCalc = Application.Calculation
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+
+    ' ---------- Localiza hojas ----------
+    Set wsDept = GetSheetOrNothing("department")
+    Set wsAgent = GetSheetOrNothing("agent")
+    Set wsLang = GetSheetOrNothing("language")
+    If wsDept Is Nothing Then missingMaps = missingMaps & "department "
+    If wsAgent Is Nothing Then missingMaps = missingMaps & "agent "
+    If wsLang Is Nothing Then missingMaps = missingMaps & "language "
+    Set wsData = DetectDataSheet(Array("department", "agent", "language", "unmatched"))
+    If wsData Is Nothing Then Err.Raise vbObjectError + 102, , "No se encontró una hoja de datos válida."
+
+    ' ---------- Encabezados ----------
+    With wsData
+        .Range("A1").Value = "Date"
+        .Range("B1").Value = "department_id"
+        .Range("C1").Value = "aba"
+        .Range("D1").Value = "total_call_duration"
+        .Range("E1").Value = "aht"
+        .Range("F1").Value = "agent_id"
+        .Range("G1").Value = "interaction_type"
+        .Range("H1").Value = "language"
+        .Range("I1").Value = "agent_talk_time"
+        .Range("J1").Value = "total_ring_duration"
+
+        lastRow = LastUsedRowInRange(.Range("A:J"))
+        If lastRow < 2 Then
+            ' No hay filas de datos; aún así generamos un .sql válido sin filas
+            Dim emptyPath As String
+            emptyPath = EnsureDownloadsPath()
+            outFile = emptyPath & Application.PathSeparator & "Call_ASA_AHT_Payments_" & Format(Now, "yyyymmdd_Hhnnss") & ".sql"
+            WriteEmptyInsert outFile
+            GoTo FIN
+        End If
+    End With
+
+    ' ---------- Diccionarios de mapeo (B -> A) ----------
+    Set dDept = BuildMapSafe(wsDept, 2, 1)
+    Set dAgent = BuildMapSafe(wsAgent, 2, 1)
+    Set dLang = BuildMapSafe(wsLang, 2, 1)
+
+    ' ---------- Preparación hoja "unmatched" ----------
+    Set unmatched = New Collection
+    SafeDeleteSheet "unmatched"           ' Intento de borrado (no falla si no se puede)
+
+    ' ---------- Transformación fila a fila ----------
+    Dim vDate As Variant, vDept As Variant, vAba As Variant, vTotCall As Variant
+    Dim vAht As Variant, vAgent As Variant, vInter As Variant, vLang As Variant
+    Dim vTalk As Variant, vRing As Variant
+
+    For i = 2 To lastRow
+        ' A: Date (yyyy-mm-dd). Si no parsea ? vacío (? NULL en SQL)
+        vDate = wsData.Cells(i, 1).Value
+        If TrimSafe(vDate) <> "" Then
+            vDate = CoerceToDateOrEmpty(vDate)
+            If Not IsEmpty(vDate) Then
+                wsData.Cells(i, 1).Value = vDate
+            Else
+                wsData.Cells(i, 1).Value = ""
+                AddUnmatched unmatched, "Date", wsData.Cells(i, 1).Text, i
+            End If
+        Else
+            wsData.Cells(i, 1).Value = ""
+        End If
+
+        ' B: department_id (map B->A)
+        vDept = wsData.Cells(i, 2).Value
+        If TrimSafe(vDept) <> "" Then
+            Dim mDept As String: mDept = MapOrEmpty(dDept, vDept)
+            If mDept <> "" Then
+                wsData.Cells(i, 2).Value = CLng(mDept)
+            Else
+                AddUnmatched unmatched, "department_id", wsData.Cells(i, 2).Text, i
+            End If
+        End If
+
+        ' C: aba (TRUE/FALSE/VERDADERO/FALSO/1/0 ? 1/0)
+        vAba = ToBoolean01OrEmpty(wsData.Cells(i, 3).Value)
+        If TrimSafe(vAba) <> "" Then
+            wsData.Cells(i, 3).Value = CLng(vAba)
+        Else
+            wsData.Cells(i, 3).Value = "" ' ? NULL en SQL
+        End If
+
+        ' D: total_call_duration (entero)
+        vTotCall = ToIntegerOrEmpty(wsData.Cells(i, 4).Value)
+        wsData.Cells(i, 4).Value = vTotCall
+
+        ' E: aht (entero)
+        vAht = ToIntegerOrEmpty(wsData.Cells(i, 5).Value)
+        wsData.Cells(i, 5).Value = vAht
+
+        ' F: agent_id (map B->A)
+        vAgent = wsData.Cells(i, 6).Value
+        If TrimSafe(vAgent) <> "" Then
+            Dim mAgent As String: mAgent = MapOrEmpty(dAgent, vAgent)
+            If mAgent <> "" Then
+                wsData.Cells(i, 6).Value = CLng(mAgent)
+            Else
+                AddUnmatched unmatched, "agent_id", wsData.Cells(i, 6).Text, i
+            End If
+        End If
+
+        ' G: interaction_type (texto)
+        vInter = wsData.Cells(i, 7).Value
+        wsData.Cells(i, 7).Value = TrimSafe(vInter)
+
+        ' H: language (map B->A)
+        vLang = wsData.Cells(i, 8).Value
+        If TrimSafe(vLang) <> "" Then
+            Dim mLang As String: mLang = MapOrEmpty(dLang, vLang)
+            If mLang <> "" Then
+                wsData.Cells(i, 8).Value = CLng(mLang)
+            Else
+                AddUnmatched unmatched, "language", wsData.Cells(i, 8).Text, i
+            End If
+        End If
+
+        ' I: agent_talk_time (entero)
+        vTalk = ToIntegerOrEmpty(wsData.Cells(i, 9).Value)
+        wsData.Cells(i, 9).Value = vTalk
+
+        ' J: total_ring_duration (entero)
+        vRing = ToIntegerOrEmpty(wsData.Cells(i, 10).Value)
+        wsData.Cells(i, 10).Value = vRing
+    Next i
+
+    ' Formatos visibles en Excel
+    wsData.Columns(1).NumberFormat = "yyyy-mm-dd"
+    wsData.Columns(4).NumberFormat = "0"
+    wsData.Columns(5).NumberFormat = "0"
+    wsData.Columns(9).NumberFormat = "0"
+    wsData.Columns(10).NumberFormat = "0"
+
+    ' ---------- Crear hoja "unmatched" (tolerante) ----------
+    cntUnmatched = unmatched.Count
+    If cntUnmatched > 0 Then
+        Dim wsUn As Worksheet
+        Set wsUn = SafeAddSheet()              ' Puede devolver Nothing si no se puede agregar
+
+        If Not wsUn Is Nothing Then
+            ' Intentar llamarla "unmatched"; si ya existe o no se puede, usar nombre único
+            unmatchedSheetName = "unmatched"
+            On Error Resume Next
+            wsUn.Name = unmatchedSheetName
+            If Err.Number <> 0 Then
+                Err.Clear
+                wsUn.Name = UniqueSheetName(unmatchedSheetName)
+            End If
+            On Error GoTo 0
+
+            wsUn.Range("A1:C1").Value = Array("column_name", "original_value", "row_number")
+            Dim r As Long: r = 2
+            Dim it As Variant
+            For Each it In unmatched
+                wsUn.Cells(r, 1).Value = it(1)
+                wsUn.Cells(r, 2).Value = it(2)
+                wsUn.Cells(r, 3).Value = it(3)
+                r = r + 1
+            Next it
+            With wsUn.Range("A1:C1").Font
+                .Bold = True
+            End With
+            wsUn.Columns("A:C").AutoFit
+            createdUnmatched = True
+            unmatchedSheetName = wsUn.Name
+        Else
+            ' No se pudo crear hoja (libro protegido). Continuar sin bloquear la exportación.
+            createdUnmatched = False
+        End If
+    End If
+
+    ' ---------- Generar SQL (sin comentarios) ----------
+    sqlPath = EnsureDownloadsPath()
+    outFile = sqlPath & Application.PathSeparator & "Call_ASA_AHT_Payments_" & Format(Now, "yyyymmdd_Hhnnss") & ".sql"
+    outCount = ExportSQL(wsData, 2, lastRow, blockSize, outFile)
+
+FIN:
+    ' ---------- Fin ----------
+    Application.ScreenUpdating = True
+    Application.Calculation = appCalc
+    Application.EnableEvents = True
+
+    Dim msg As String
+    msg = "Transformación finalizada." & vbCrLf & vbCrLf & _
+          "Hoja de datos: " & wsData.Name & vbCrLf & _
+          "Filas procesadas: " & IIf(lastRow >= 2, (lastRow - 1), 0) & vbCrLf & _
+          "Filas exportadas a SQL: " & outCount & vbCrLf & _
+          IIf(Len(Trim(missingMaps)) > 0, "Mapeos no disponibles: " & Trim(missingMaps) & vbCrLf, "") & _
+          IIf(cntUnmatched > 0, IIf(createdUnmatched, "Se creó la hoja '" & unmatchedSheetName & "' con " & cntUnmatched & " incidencias." & vbCrLf, "No se pudo crear 'unmatched' (libro protegido). Incidencias: " & cntUnmatched & vbCrLf), "Sin incidencias de mapeo." & vbCrLf) & _
+          "Archivo SQL: " & outFile & vbCrLf & _
+          "Tiempo: " & Format(Timer - t0, "0.0") & " s"
+
+    MsgBox msg, vbInformation, "CustomerService.ASA_AHT_payments"
+    Exit Sub
+
+EH:
+    Application.ScreenUpdating = True
+    Application.Calculation = appCalc
+    Application.EnableEvents = True
+    MsgBox "Error: " & Err.Description, vbCritical
+End Sub
+
+' ---------------------------- Helpers ----------------------------
+Private Function GetSheetOrNothing(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetSheetOrNothing = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+' Borrado tolerante: no lanza error si no se puede borrar (p.ej., libro protegido)
+Private Sub SafeDeleteSheet(ByVal sheetName As String)
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    ThisWorkbook.Worksheets(sheetName).Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+End Sub
+
+Private Function SafeAddSheet() As Worksheet
+    On Error Resume Next
+    Set SafeAddSheet = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    On Error GoTo 0
+End Function
+
+Private Function UniqueSheetName(ByVal baseName As String) As String
+    Dim k As Long: k = 1
+    Dim nm As String
+    nm = baseName
+    Do While SheetExists(nm)
+        k = k + 1
+        nm = baseName & "_" & k
+    Loop
+    UniqueSheetName = nm
+End Function
+
+Private Function SheetExists(ByVal sheetName As String) As Boolean
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    SheetExists = Not ws Is Nothing
+    On Error GoTo 0
+End Function
+
+Private Function DetectDataSheet(ByVal excludeNames As Variant) As Worksheet
+    Dim ws As Worksheet, i As Long
+    Dim ex As Object: Set ex = CreateObject("Scripting.Dictionary")
+    If IsArray(excludeNames) Then
+        For i = LBound(excludeNames) To UBound(excludeNames)
+            ex(LCase(CStr(excludeNames(i)))) = True
+        Next i
+    End If
+    For Each ws In ThisWorkbook.Worksheets
+        If Not ex.Exists(LCase(ws.Name)) Then
+            If LastUsedRowInRange(ws.Range("A:J")) >= 2 Then
+                Set DetectDataSheet = ws
+                Exit Function
+            End If
+        End If
+    Next ws
+    If ThisWorkbook.Worksheets.Count > 0 Then Set DetectDataSheet = ThisWorkbook.Worksheets(1)
+End Function
+
+Private Function LastUsedRowInRange(ByVal rng As Range) As Long
+    Dim r As Range
+    On Error Resume Next
+    Set r = rng.Find(What:="*", LookIn:=xlFormulas, LookAt:=xlPart, _
+                     SearchOrder:=xlByRows, SearchDirection:=xlPrevious, MatchCase:=False)
+    If r Is Nothing Then
+        LastUsedRowInRange = rng.Row
+    Else
+        LastUsedRowInRange = r.Row
+    End If
+    On Error GoTo 0
+End Function
+
+Private Function BuildMapSafe(ByVal ws As Worksheet, ByVal keyCol As Long, ByVal valCol As Long) As Object
+    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+    d.CompareMode = 1 ' TextCompare
+    If ws Is Nothing Then
+        Set BuildMapSafe = d
+        Exit Function
+    End If
+    Dim lastRow As Long: lastRow = LastUsedRowInRange(ws.Columns(keyCol))
+    Dim i As Long, k As String, v As Variant
+    For i = 2 To lastRow
+        k = TrimSafe(ws.Cells(i, keyCol).Value)
+        If k <> "" Then
+            v = ws.Cells(i, valCol).Value
+            If Not d.Exists(k) Then d.Add k, v
+        End If
+    Next i
+    Set BuildMapSafe = d
+End Function
+
+Private Function MapOrEmpty(ByVal d As Object, ByVal v As Variant) As String
+    Dim k As String: k = TrimSafe(v)
+    If k = "" Then
+        MapOrEmpty = ""
+    ElseIf d.Exists(k) Then
+        MapOrEmpty = CStr(d(k))
+    Else
+        MapOrEmpty = ""
+    End If
+End Function
+
+Private Function TrimSafe(ByVal v As Variant) As String
+    On Error Resume Next
+    TrimSafe = Trim(CStr(v))
+    On Error GoTo 0
+End Function
+
+Private Function CoerceToDateOrEmpty(ByVal v As Variant) As Variant
+    ' Devuelve fecha VBA o Empty si no parsea.
+    On Error GoTo FAIL
+    If IsDate(v) Then
+        CoerceToDateOrEmpty = CDate(v)
+    Else
+        If IsDate(CStr(v)) Then
+            CoerceToDateOrEmpty = CDate(CStr(v))
+        Else
+            CoerceToDateOrEmpty = Empty
+        End If
+    End If
+    Exit Function
+FAIL:
+    CoerceToDateOrEmpty = Empty
+End Function
+
+Private Function ToBoolean01OrEmpty(ByVal v As Variant) As Variant
+    ' Acepta True/False reales, "TRUE"/"FALSE", "VERDADERO"/"FALSO", 1/0
+    Dim s As String: s = UCase(TrimSafe(v))
+    If s = "" Then
+        ToBoolean01OrEmpty = ""
+    ElseIf s = "TRUE" Or s = "VERDADERO" Or s = "-1" Or s = "1" Then
+        ToBoolean01OrEmpty = 1
+    ElseIf s = "FALSE" Or s = "FALSO" Or s = "0" Then
+        ToBoolean01OrEmpty = 0
+    ElseIf VarType(v) = vbBoolean Then
+        ToBoolean01OrEmpty = IIf(CBool(v), 1, 0)
+    Else
+        ToBoolean01OrEmpty = ""
+    End If
+End Function
+
+Private Function ToIntegerOrEmpty(ByVal v As Variant) As Variant
+    Dim s As String: s = TrimSafe(v)
+    If s = "" Then
+        ToIntegerOrEmpty = ""
+    ElseIf IsNumeric(s) Then
+        ToIntegerOrEmpty = CLng(Round(CDbl(s), 0))
+    Else
+        ToIntegerOrEmpty = ""
+    End If
+End Function
+
+Private Sub AddUnmatched(ByRef bag As Collection, ByVal colName As String, ByVal originalVal As String, ByVal rowNum As Long)
+    Dim it(1 To 3) As Variant
+    it(1) = colName
+    it(2) = originalVal
+    it(3) = rowNum
+    bag.Add it
+End Sub
+
+Private Function SqlEscapeText(ByVal s As String) As String
+    s = TrimSafe(s)
+    s = Replace(s, "'", "''")
+    SqlEscapeText = s
+End Function
+
+Private Function EnsureDownloadsPath() As String
+    Dim p As String
+    p = Environ$("USERPROFILE") & Application.PathSeparator & "Downloads"
+    If Len(Dir$(p, vbDirectory)) = 0 Then
+        ' Fallback: carpeta del libro
+        p = ThisWorkbook.Path
+    End If
+    EnsureDownloadsPath = p
+End Function
+
+Private Sub WriteEmptyInsert(ByVal outFile As String)
+    ' Genera un archivo SQL válido sin filas (INSERT ... SELECT ... WHERE 1=0)
+    Dim buff As Object ' ADODB.Stream
+    Set buff = CreateObject("ADODB.Stream")
+    buff.Type = 2 ' text
+    buff.Charset = "utf-8"
+    buff.Open
+    buff.WriteText _
+        "INSERT INTO CustomerService.ASA_AHT_payments ([Date],[department_id],[aba],[total_call_duration],[aht],[agent_id],[interaction_type],[language],[agent_talk_time],[total_ring_duration])" & vbCrLf & _
+        "SELECT CAST(NULL AS date), NULL, NULL, NULL, NULL, NULL, CAST(NULL AS nvarchar(4000)), NULL, NULL, NULL WHERE 1=0;" & vbCrLf
+    buff.SaveToFile outFile, 2 ' adSaveCreateOverWrite
+    buff.Close
+    Set buff = Nothing
+End Sub
+
+Private Function ExportSQL(ByVal ws As Worksheet, ByVal rowStart As Long, ByVal rowEnd As Long, _
+                           ByVal blockSize As Long, ByVal outFile As String) As Long
+    Dim i As Long, n As Long
+    Dim insertHead As String
+    Dim buff As Object ' ADODB.Stream
+    Dim line As String
+    Dim inBlock As Long
+
+    insertHead = "INSERT INTO CustomerService.ASA_AHT " & _
+                 "([Date],[department_id],[aba],[total_call_duration],[aht],[agent_id],[interaction_type],[language],[agent_talk_time],[total_ring_duration])" & vbCrLf & _
+                 "VALUES" & vbCrLf
+
+    Set buff = CreateObject("ADODB.Stream")
+    buff.Type = 2 ' text
+    buff.Charset = "utf-8"
+    buff.Open
+
+    n = 0: inBlock = 0
+
+    For i = rowStart To rowEnd
+        Dim vDate As Variant, vDept As Variant, vAba As Variant, vTot As Variant
+        Dim vAht As Variant, vAgent As Variant, vInter As Variant, vLang As Variant
+        Dim vTalk As Variant, vRing As Variant
+        Dim sDate As String, sDept As String, sAba As String, sTot As String
+        Dim sAht As String, sAgent As String, sInter As String, sLang As String
+        Dim sTalk As String, sRing As String
+
+        vDate = ws.Cells(i, 1).Value
+        vDept = ws.Cells(i, 2).Value
+        vAba = ws.Cells(i, 3).Value
+        vTot = ws.Cells(i, 4).Value
+        vAht = ws.Cells(i, 5).Value
+        vAgent = ws.Cells(i, 6).Value
+        vInter = ws.Cells(i, 7).Value
+        vLang = ws.Cells(i, 8).Value
+        vTalk = ws.Cells(i, 9).Value
+        vRing = ws.Cells(i, 10).Value
+
+        ' date
+        If IsDate(vDate) Then
+            sDate = "'" & Format(CDate(vDate), "yyyy-mm-dd") & "'"
+        Else
+            sDate = "NULL"
+        End If
+
+        ' department_id
+        If IsNumeric(vDept) And Trim(CStr(vDept)) <> "" Then sDept = CStr(CLng(vDept)) Else sDept = "NULL"
+
+        ' aba
+        If Trim(CStr(vAba)) = "1" Or vAba = 1 Then
+            sAba = "1"
+        ElseIf Trim(CStr(vAba)) = "0" Or vAba = 0 Then
+            sAba = "0"
+        Else
+            sAba = "NULL"
+        End If
+
+        ' total_call_duration
+        If IsNumeric(vTot) And Trim(CStr(vTot)) <> "" Then sTot = CStr(CLng(vTot)) Else sTot = "NULL"
+
+        ' aht
+        If IsNumeric(vAht) And Trim(CStr(vAht)) <> "" Then sAht = CStr(CLng(vAht)) Else sAht = "NULL"
+
+        ' agent_id
+        If IsNumeric(vAgent) And Trim(CStr(vAgent)) <> "" Then sAgent = CStr(CLng(vAgent)) Else sAgent = "NULL"
+
+        ' interaction_type
+        If Trim(CStr(vInter)) <> "" Then
+            sInter = "N'" & SqlEscapeText(CStr(vInter)) & "'"
+        Else
+            sInter = "NULL"
+        End If
+
+        ' language
+        If IsNumeric(vLang) And Trim(CStr(vLang)) <> "" Then sLang = CStr(CLng(vLang)) Else sLang = "NULL"
+
+        ' agent_talk_time
+        If IsNumeric(vTalk) And Trim(CStr(vTalk)) <> "" Then sTalk = CStr(CLng(vTalk)) Else sTalk = "NULL"
+
+        ' total_ring_duration
+        If IsNumeric(vRing) And Trim(CStr(vRing)) <> "" Then sRing = CStr(CLng(vRing)) Else sRing = "NULL"
+
+        line = " (" & sDate & "," & sDept & "," & sAba & "," & sTot & "," & sAht & "," & sAgent & "," & sInter & "," & sLang & "," & sTalk & "," & sRing & ")"
+
+        ' Manejo de bloques
+        If inBlock = 0 Then
+            buff.WriteText insertHead
+        Else
+            buff.WriteText "," & vbCrLf
+        End If
+
+        buff.WriteText line
+        inBlock = inBlock + 1
+        n = n + 1
+
+        If inBlock >= blockSize Then
+            buff.WriteText ";" & vbCrLf & vbCrLf
+            inBlock = 0
+        End If
+    Next i
+
+    ' Cierra último bloque si quedó abierto
+    If inBlock > 0 Then
+        buff.WriteText ";" & vbCrLf
+    End If
+
+    ' Graba a disco
+    buff.SaveToFile outFile, 2 ' adSaveCreateOverWrite
+    buff.Close
+    Set buff = Nothing
+
+    ExportSQL = n
+End Function
+
+
+

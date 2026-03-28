@@ -1,0 +1,503 @@
+SF report no. 00OR6000009TMpbMAG
+
+Option Explicit
+
+' ======================================================
+' Exportador a SQL (Azure SQL Server) — Null-safe
+' Origen: Hoja "Main" (fila 1 = headers, datos desde fila 2)
+' Salida: Archivo .sql en carpeta Downloads del usuario
+' Columnas del .sql fijas (A..V) y en este orden:
+'  A Date (yyyy-mm-dd)
+'  B case_number
+'  C survey_name
+'  D Premium (bit)
+'  E account_name
+'  F chain
+'  G department_name
+'  H team_hierarchy
+'  I case_origin
+'  J case_reason
+'  K case_subreason
+'  L agent_id (mapeo por maestro; default 673)
+'  M country
+'  N NPS_type
+'  O survey_resolution
+'  P NPS
+'  Q NPS_Reason
+'  R NES
+'  S CSAT_Service
+'  T CSAT_Product
+'  U customer_comment
+'  V customer_comment_detractor
+' ======================================================
+
+' ======================
+' CONFIG
+' ======================
+Private Const SRC_SHEET As String = "Main"
+Private Const AGENT_SHEET As String = "agent"
+Private Const TABLE_FULL_NAME As String = "[CustomerService].[VoC]"
+Private Const FORCE_QUOTES_ALL As Boolean = True        ' Entrecomillar todos los valores
+Private Const WRITE_NULLS As Boolean = True             ' Vacíos -> NULL
+Private Const DEFAULT_AGENT_ID As String = "673"
+
+' ======================
+' ENTRADA PRINCIPAL
+' ======================
+Public Sub ExportVoCToSQL()
+    On Error GoTo ErrHandler
+
+    Dim wb As Workbook: Set wb = ThisWorkbook
+    Dim ws As Worksheet: Set ws = GetWorksheetSafe(wb, SRC_SHEET)
+    If ws Is Nothing Then
+        MsgBox "No encuentro la hoja origen: " & SRC_SHEET, vbCritical
+        Exit Sub
+    End If
+
+    Dim lastRow As Long, lastCol As Long
+    lastRow = LastUsedRow(ws)
+    lastCol = LastUsedCol(ws)
+    If lastRow < 2 Then
+        MsgBox "No hay datos para exportar.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Maestro de agentes
+    Dim nameToId As Object: Set nameToId = CreateObject("Scripting.Dictionary")
+    BuildAgentNameToIdMap wb, nameToId   ' llena diccionario: nombre normalizado -> id
+
+    ' Headers fijos del SQL
+    Dim sqlHeaders() As String
+    sqlHeaders = FixedSqlHeaders()
+
+    ' Construcción de VALUES
+    Dim lines As Collection: Set lines = New Collection
+
+    Dim r As Long
+    For r = 2 To lastRow
+        If RowIsEmpty(ws, r, Application.Min(lastCol, 22)) Then GoTo NextRow
+
+        Dim parts(1 To 22) As String
+
+        ' A) Date
+        parts(1) = SqlDate(ws.Cells(r, 1).Value, WRITE_NULLS)
+
+        ' B) case_number (forzamos texto plano sin notación científica)
+        parts(2) = SqlQuote(ToPlainNumberText(ws.Cells(r, 2).Value), WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' C) survey_name
+        parts(3) = SqlQuote(ws.Cells(r, 3).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' D) Premium (bit)
+        parts(4) = BitFromBoolCell(ws.Cells(r, 4).Value, WRITE_NULLS, True)
+
+        ' E) account_name
+        parts(5) = SqlQuote(ws.Cells(r, 5).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' F) chain
+        parts(6) = SqlQuote(ws.Cells(r, 6).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' G) department_name
+        parts(7) = SqlQuote(ws.Cells(r, 7).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' H) team_hierarchy
+        parts(8) = SqlQuote(ws.Cells(r, 8).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' I) case_origin
+        parts(9) = SqlQuote(ws.Cells(r, 9).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' J) case_reason
+        parts(10) = SqlQuote(ws.Cells(r, 10).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' K) case_subreason
+        parts(11) = SqlQuote(ws.Cells(r, 11).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' L) agent_id (mapeo por nombre/ID; default 673)
+        Dim rawAgent As Variant: rawAgent = ws.Cells(r, 12).Value
+        Dim resolvedId As String: resolvedId = ResolveAgentIdWithDefault(rawAgent, nameToId)
+
+' Escribir el agent_id mapeado en columna 23
+ws.Cells(r, 23).Value = resolvedId
+
+' Si se usó el valor por defecto, registrar en hoja "not mapped"
+If resolvedId = DEFAULT_AGENT_ID Then
+    Dim nmWs As Worksheet
+    Set nmWs = GetWorksheetSafe(wb, "not mapped")
+    If nmWs Is Nothing Then
+        Set nmWs = wb.Worksheets.Add
+        nmWs.name = "not mapped"
+        nmWs.Cells(1, 1).Value = "Row"
+        nmWs.Cells(1, 2).Value = "Original Value"
+    End If
+    Dim nmRow As Long
+    nmRow = LastUsedRow(nmWs) + 1
+    nmWs.Cells(nmRow, 1).Value = r
+    nmWs.Cells(nmRow, 2).Value = rawAgent
+End If
+        parts(12) = SqlQuote(resolvedId, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' M) country
+        parts(13) = SqlQuote(ws.Cells(r, 13).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' N) NPS_type
+        parts(14) = SqlQuote(ws.Cells(r, 14).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' O) survey_resolution (numeric, pero lo enviamos entrecomillado por política uniforme)
+        parts(15) = SqlQuote(ws.Cells(r, 15).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' P) NPS
+        parts(16) = SqlQuote(ws.Cells(r, 16).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' Q) NPS_Reason
+        parts(17) = SqlQuote(ws.Cells(r, 17).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' R) NES
+        parts(18) = SqlQuote(ws.Cells(r, 18).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' S) CSAT_Service
+        parts(19) = SqlQuote(ws.Cells(r, 19).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' T) CSAT_Product
+        parts(20) = SqlQuote(ws.Cells(r, 20).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' U) customer_comment
+        parts(21) = SqlQuote(ws.Cells(r, 21).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        ' V) customer_comment_detractor
+        parts(22) = SqlQuote(ws.Cells(r, 22).Value, WRITE_NULLS, FORCE_QUOTES_ALL)
+
+        Dim oneLine As String
+        oneLine = "(" & Join(parts, ", ") & ")"
+        lines.Add oneLine
+NextRow:
+    Next r
+
+    If lines.Count = 0 Then
+        MsgBox "No hay filas válidas para exportar.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim colsSql As String
+    colsSql = "[" & Join(sqlHeaders, "], [") & "]"
+
+    Dim sqlText As String
+    sqlText = "INSERT INTO " & TABLE_FULL_NAME & " (" & colsSql & ") VALUES" & vbCrLf _
+              & JoinCollection(lines, "," & vbCrLf) & ";" & vbCrLf
+
+    ' Salida a fichero en Downloads
+    Dim outPath As String
+    outPath = BuildOutputPathToDownloads(TABLE_FULL_NAME)
+    EnsureFolder GetFolderFromPath(outPath)
+    WriteAllText outPath, sqlText
+
+    MsgBox "? Export completado." & vbCrLf & outPath, vbInformation
+    Exit Sub
+
+ErrHandler:
+    MsgBox "? Error " & Err.Number & " - " & Err.Description, vbCritical
+End Sub
+
+' ======================
+' HEADERS FIJOS PARA EL SQL
+' ======================
+Private Function FixedSqlHeaders() As String()
+    Dim h(1 To 22) As String
+    h(1) = "Date"
+    h(2) = "case_number"
+    h(3) = "survey_name"
+    h(4) = "Premium"
+    h(5) = "account_name"
+    h(6) = "chain"
+    h(7) = "department_name"
+    h(8) = "team_hierarchy"
+    h(9) = "case_origin"
+    h(10) = "case_reason"
+    h(11) = "case_subreason"
+    h(12) = "agent_id"
+    h(13) = "country"
+    h(14) = "NPS_type"
+    h(15) = "survey_resolution"
+    h(16) = "NPS"
+    h(17) = "NPS_Reason"
+    h(18) = "NES"
+    h(19) = "CSAT_Service"
+    h(20) = "CSAT_Product"
+    h(21) = "customer_comment"
+    h(22) = "customer_comment_detractor"
+    FixedSqlHeaders = h
+End Function
+
+' ======================
+' MAPEO DE agent_id
+' ======================
+Private Sub BuildAgentNameToIdMap(ByVal wb As Workbook, ByRef nameToId As Object)
+    Dim ws As Worksheet: Set ws = GetWorksheetSafe(wb, AGENT_SHEET)
+    If ws Is Nothing Then Exit Sub
+
+    Dim lr As Long, lc As Long
+    lr = LastUsedRow(ws): lc = LastUsedCol(ws)
+    If lr < 2 Then Exit Sub
+
+    ' Detectar columnas relevantes
+    Dim agentIdCol As Long, fullNameCol As Long, firstNameCol As Long, lastNameCol As Long, agentNameCol As Long
+    agentIdCol = FindHeaderColumn(ws, "agent_id")
+    fullNameCol = FindHeaderColumn(ws, "full_name")
+    firstNameCol = FindHeaderColumn(ws, "first_name")
+    lastNameCol = FindHeaderColumn(ws, "last_name")
+    agentNameCol = FindHeaderColumn(ws, "agent_name") ' NUEVO
+
+    Dim r As Long
+    For r = 2 To lr
+        Dim aid As Variant, fn As Variant, ln As Variant, full As Variant, agentName As Variant
+        If agentIdCol > 0 Then aid = ws.Cells(r, agentIdCol).Value2
+        If fullNameCol > 0 Then full = ws.Cells(r, fullNameCol).Value2
+        If firstNameCol > 0 Then fn = ws.Cells(r, firstNameCol).Value2
+        If lastNameCol > 0 Then ln = ws.Cells(r, lastNameCol).Value2
+        If agentNameCol > 0 Then agentName = ws.Cells(r, agentNameCol).Value2 ' NUEVO
+
+        Dim idStr As String: idStr = Trim$(SafeCStr(aid))
+        If idStr = "" Then GoTo NextRow
+
+        ' Mapear por full_name
+        If Not IsBlankLike(full) Then
+            Dim keyFull As String: keyFull = CleanName(SafeCStr(full))
+            If Len(keyFull) > 0 Then If Not nameToId.Exists(keyFull) Then nameToId.Add keyFull, idStr
+        End If
+
+        ' Mapear por first + last name
+        If Not IsBlankLike(fn) Or Not IsBlankLike(ln) Then
+            Dim keyFL As String: keyFL = CleanName(Trim$(SafeCStr(fn) & " " & SafeCStr(ln)))
+            If Len(keyFL) > 0 Then If Not nameToId.Exists(keyFL) Then nameToId.Add keyFL, idStr
+        End If
+
+        ' Mapear por agent_name (nuevo)
+        If Not IsBlankLike(agentName) Then
+            Dim keyAgent As String: keyAgent = CleanName(SafeCStr(agentName))
+            If Len(keyAgent) > 0 Then If Not nameToId.Exists(keyAgent) Then nameToId.Add keyAgent, idStr
+        End If
+NextRow:
+    Next r
+End Sub
+
+Private Function ResolveAgentIdWithDefault(ByVal raw As Variant, ByVal nameToId As Object) As String
+    ' 1) Si viene numérico, úsalo
+    Dim s As String: s = Trim$(SafeCStr(raw))
+    If s <> "" Then
+        If IsNumeric(SanitizeNumber(s)) And LooksLikeId(s) Then
+            ResolveAgentIdWithDefault = s
+            Exit Function
+        End If
+        ' 2) Si viene un nombre, intenta mapear
+        Dim key As String: key = CleanName(s)
+        If nameToId.Exists(key) Then
+            ResolveAgentIdWithDefault = nameToId(key)
+            Exit Function
+        End If
+    End If
+    ' 3) Default
+    ResolveAgentIdWithDefault = DEFAULT_AGENT_ID
+End Function
+
+Private Function LooksLikeId(ByVal s As String) As Boolean
+    Dim digits As String: digits = SanitizeNumber(s)
+    LooksLikeId = (Len(digits) > 0 And Len(digits) <= 10)
+End Function
+
+
+' ======================
+' SERIALIZACIÓN / NULL-SAFE
+' ======================
+Private Function SafeCStr(ByVal v As Variant) As String
+    On Error GoTo Fallback
+    SafeCStr = CStr(v)
+    Exit Function
+Fallback:
+    SafeCStr = ""
+End Function
+
+Private Function IsBlankLike(ByVal v As Variant) As Boolean
+    If IsNull(v) Then IsBlankLike = True: Exit Function
+    If VarType(v) = vbEmpty Then IsBlankLike = True: Exit Function
+    Dim s As String: s = Trim$(SafeCStr(v))
+    IsBlankLike = (s = "" Or UCase$(s) = "NULL")
+End Function
+
+Private Function SqlQuote(ByVal v As Variant, _
+                          Optional ByVal allowNull As Boolean = True, _
+                          Optional ByVal forceQuotes As Boolean = True) As String
+    If IsBlankLike(v) Then
+        If allowNull And WRITE_NULLS Then
+            SqlQuote = "NULL"
+        Else
+            SqlQuote = "''"
+        End If
+    Else
+        Dim s As String: s = Replace$(SafeCStr(v), "'", "''")
+        If forceQuotes Then SqlQuote = "'" & s & "'" Else SqlQuote = s
+    End If
+End Function
+
+Private Function SqlDate(ByVal v As Variant, _
+                         Optional ByVal allowNull As Boolean = True) As String
+    If IsBlankLike(v) Then
+        SqlDate = IIf(allowNull And WRITE_NULLS, "NULL", "''")
+    ElseIf IsDate(v) Then
+        SqlDate = "'" & Format$(CDate(v), "yyyy-mm-dd") & "'"
+    Else
+        SqlDate = IIf(allowNull And WRITE_NULLS, "NULL", "''")
+    End If
+End Function
+
+Private Function BitFromBoolCell(ByVal v As Variant, _
+                                 Optional ByVal allowNull As Boolean = True, _
+                                 Optional ByVal quoted As Boolean = True) As String
+    If IsBlankLike(v) Then
+        BitFromBoolCell = IIf(allowNull And WRITE_NULLS, "NULL", IIf(quoted, "'0'", "0"))
+        Exit Function
+    End If
+
+    Dim s As String: s = UCase$(Trim$(SafeCStr(v)))
+    Dim bitVal As String
+    Select Case s
+        Case "TRUE", "VERDADERO", "1", "SI", "SÍ", "YES": bitVal = "1"
+        Case "FALSE", "FALSO", "0", "NO": bitVal = "0"
+        Case Else
+            If allowNull And WRITE_NULLS Then BitFromBoolCell = "NULL": Exit Function Else bitVal = "0"
+    End Select
+
+    BitFromBoolCell = IIf(quoted, "'" & bitVal & "'", bitVal)
+End Function
+
+Private Function ToPlainNumberText(ByVal v As Variant) As String
+    ' Evita notación científica en números grandes (ej. case_number)
+    If IsBlankLike(v) Then
+        ToPlainNumberText = ""
+    ElseIf IsNumeric(v) Then
+        ToPlainNumberText = Format$(v, "0")
+    Else
+        ToPlainNumberText = SafeCStr(v)
+    End If
+End Function
+
+' ======================
+' UTILIDADES HOJA / IO
+' ======================
+Private Function GetWorksheetSafe(ByVal wb As Workbook, ByVal name As String) As Worksheet
+    On Error Resume Next
+    Set GetWorksheetSafe = wb.Worksheets(name)
+    On Error GoTo 0
+End Function
+
+Private Function LastUsedRow(ws As Worksheet) As Long
+    LastUsedRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+End Function
+
+Private Function LastUsedCol(ws As Worksheet) As Long
+    LastUsedCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+End Function
+
+Private Function RowIsEmpty(ws As Worksheet, ByVal r As Long, ByVal lastCol As Long) As Boolean
+    On Error Resume Next
+    RowIsEmpty = (WorksheetFunction.CountA(ws.Range(ws.Cells(r, 1), ws.Cells(r, lastCol))) = 0)
+End Function
+
+Private Function JoinCollection(col As Collection, ByVal sep As String) As String
+    Dim i As Long, s As String
+    For i = 1 To col.Count
+        s = s & col(i)
+        If i < col.Count Then s = s & sep
+    Next i
+    JoinCollection = s
+End Function
+
+' ---- Salida en Downloads ----
+Private Function GetDownloadsFolderPath() As String
+    Dim base As String: base = Environ$("USERPROFILE")
+    If Len(base) > 0 Then
+        If Right$(base, 1) = "\" Then
+            GetDownloadsFolderPath = base & "Downloads"
+        Else
+            GetDownloadsFolderPath = base & "\Downloads"
+        End If
+        If Dir(GetDownloadsFolderPath, vbDirectory) <> "" Then Exit Function
+    End If
+    ' Fallback
+    GetDownloadsFolderPath = ThisWorkbook.path
+End Function
+
+Private Function BuildOutputPathToDownloads(ByVal tableFull As String) As String
+    Dim folder As String: folder = GetDownloadsFolderPath()
+    Dim tbl As String: tbl = ExtractTableName(tableFull)
+    Dim fn As String: fn = tbl & "_" & Format(Now, "yyyymmdd_hhnnss") & ".sql"
+    BuildOutputPathToDownloads = folder & "\" & fn
+End Function
+
+Private Sub EnsureFolder(ByVal folderPath As String)
+    If Len(folderPath) = 0 Then Exit Sub
+    If Dir(folderPath, vbDirectory) = "" Then MkDirRecursive folderPath
+End Sub
+
+Private Sub MkDirRecursive(ByVal folderPath As String)
+    Dim parts() As String: parts = Split(folderPath, "\")
+    Dim i As Long, cur As String
+    For i = LBound(parts) To UBound(parts)
+        If cur = "" Then cur = parts(i) Else cur = cur & "\" & parts(i)
+        If Len(cur) > 0 Then
+            If Dir(cur, vbDirectory) = "" Then On Error Resume Next: MkDir cur: On Error GoTo 0
+        End If
+    Next i
+End Sub
+
+Private Function ExtractTableName(ByVal tableFull As String) As String
+    Dim t As String: t = Replace$(Replace$(tableFull, "[", ""), "]", "")
+    Dim parts() As String: parts = Split(t, ".")
+    ExtractTableName = parts(UBound(parts))
+End Function
+
+Private Sub WriteAllText(ByVal path As String, ByVal content As String)
+    Dim fnum As Integer: fnum = FreeFile
+    Open path For Output As #fnum
+    Print #fnum, content
+    Close #fnum
+End Sub
+
+Private Function GetFolderFromPath(ByVal filePath As String) As String
+    Dim p As Long: p = InStrRev(filePath, "\")
+    If p > 0 Then GetFolderFromPath = Left$(filePath, p - 1) Else GetFolderFromPath = ""
+End Function
+
+' ======================
+' UTILIDADES VARIAS
+' ======================
+Private Function CleanName(ByVal s As String) As String
+    s = Trim$(s)
+    s = Replace$(s, vbCr, " ")
+    s = Replace$(s, vbLf, " ")
+    Do While InStr(s, "  ") > 0
+        s = Replace$(s, "  ", " ")
+    Loop
+    CleanName = UCase$(Trim$(s))
+End Function
+
+Private Function SanitizeNumber(ByVal s As String) As String
+    Dim tmp As String, i As Long, ch As String
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "[0-9]" Then tmp = tmp & ch
+    Next i
+    SanitizeNumber = tmp
+End Function
+
+Private Function FindHeaderColumn(ws As Worksheet, ByVal headerName As String) As Long
+    ' Busca en fila 1 (case-insensitive)
+    Dim lastCol As Long: lastCol = LastUsedCol(ws)
+    Dim c As Long
+    For c = 1 To lastCol
+        If LCase$(Trim$(SafeCStr(ws.Cells(1, c).Value2))) = LCase$(headerName) Then
+            FindHeaderColumn = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderColumn = 0
+End Function
+

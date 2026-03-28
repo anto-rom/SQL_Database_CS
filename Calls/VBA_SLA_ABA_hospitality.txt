@@ -1,0 +1,202 @@
+Sf Report No. 00OR600000BnsNVMAZ
+
+
+Sub SLAHospitalitytoSQL()
+    Dim wsMain As Worksheet
+    Dim wsUnmatched As Worksheet
+    Dim wsDept As Worksheet, wsAgent As Worksheet, wsLang As Worksheet
+    Dim lastRow As Long, i As Long
+    Dim dictDept As Object, dictAgent As Object, dictLang As Object
+    Dim unmatchedDept As Collection, unmatchedAgent As Collection, unmatchedLang As Collection
+
+    Set dictDept = CreateObject("Scripting.Dictionary")
+    Set dictAgent = CreateObject("Scripting.Dictionary")
+    Set dictLang = CreateObject("Scripting.Dictionary")
+    Set unmatchedDept = New Collection
+    Set unmatchedAgent = New Collection
+    Set unmatchedLang = New Collection
+
+    Set wsMain = ThisWorkbook.Sheets("Main")
+    On Error Resume Next
+    Set wsDept = ThisWorkbook.Sheets("department")
+    Set wsAgent = ThisWorkbook.Sheets("agent")
+    Set wsLang = ThisWorkbook.Sheets("language")
+    On Error GoTo 0
+
+    ' Rename headers
+    wsMain.Cells(1, 1).Value = "Date"
+    wsMain.Cells(1, 2).Value = "department_id"
+    wsMain.Cells(1, 3).Value = "sla"
+    wsMain.Cells(1, 4).Value = "aba"
+    wsMain.Cells(1, 5).Value = "agent_id"
+    wsMain.Cells(1, 6).Value = "end_reason"
+    wsMain.Cells(1, 7).Value = "last_state"
+    wsMain.Cells(1, 8).Value = "interaction_type"
+    wsMain.Cells(1, 9).Value = "language"
+
+    lastRow = wsMain.Cells(wsMain.Rows.Count, 1).End(xlUp).Row
+
+    ' Load mappings if sheets exist
+    If Not wsDept Is Nothing Then
+        For i = 2 To wsDept.Cells(wsDept.Rows.Count, 1).End(xlUp).Row
+            dictDept(wsDept.Cells(i, 2).Value) = wsDept.Cells(i, 1).Value
+        Next i
+    End If
+    If Not wsAgent Is Nothing Then
+        For i = 2 To wsAgent.Cells(wsAgent.Rows.Count, 1).End(xlUp).Row
+            dictAgent(wsAgent.Cells(i, 2).Value) = wsAgent.Cells(i, 1).Value
+        Next i
+    End If
+    If Not wsLang Is Nothing Then
+        For i = 2 To wsLang.Cells(wsLang.Rows.Count, 1).End(xlUp).Row
+            dictLang(wsLang.Cells(i, 2).Value) = wsLang.Cells(i, 1).Value
+        Next i
+    End If
+
+    ' Transform data
+    For i = 2 To lastRow
+        ' Format date
+        wsMain.Cells(i, 1).Value = Format(wsMain.Cells(i, 1).Value, "yyyy-mm-dd")
+        ' SLA
+        Select Case Trim(LCase(wsMain.Cells(i, 3).Value))
+            Case "less or equal 40 seconds": wsMain.Cells(i, 3).Value = 1
+            Case "more than 40 seconds": wsMain.Cells(i, 3).Value = 0
+            Case Else: wsMain.Cells(i, 3).Value = "NULL"
+        End Select
+
+        ' ABA
+        If UCase(wsMain.Cells(i, 4).Value) = "TRUE" Then
+            wsMain.Cells(i, 4).Value = 1
+        Else
+            wsMain.Cells(i, 4).Value = 0
+        End If
+        ' department_id
+        If dictDept.Exists(wsMain.Cells(i, 2).Value) Then
+            wsMain.Cells(i, 2).Value = dictDept(wsMain.Cells(i, 2).Value)
+        Else
+            On Error Resume Next: unmatchedDept.Add wsMain.Cells(i, 2).Value: On Error GoTo 0
+            ' Mantener valor original
+        End If
+        ' agent_id
+        If dictAgent.Exists(wsMain.Cells(i, 5).Value) Then
+            wsMain.Cells(i, 5).Value = dictAgent(wsMain.Cells(i, 5).Value)
+        Else
+            On Error Resume Next: unmatchedAgent.Add wsMain.Cells(i, 5).Value: On Error GoTo 0
+            ' Mantener valor original
+        End If
+        ' language
+        If dictLang.Exists(wsMain.Cells(i, 9).Value) Then
+            wsMain.Cells(i, 9).Value = dictLang(wsMain.Cells(i, 9).Value)
+        Else
+            On Error Resume Next: unmatchedLang.Add wsMain.Cells(i, 9).Value: On Error GoTo 0
+            ' Mantener valor original
+        End If
+    Next i
+
+    ' Create unmatched values sheet
+    On Error Resume Next
+    Set wsUnmatched = ThisWorkbook.Sheets("Unmatched Values")
+    If wsUnmatched Is Nothing Then
+        Set wsUnmatched = ThisWorkbook.Sheets.Add
+        wsUnmatched.Name = "Unmatched Values"
+    End If
+    On Error GoTo 0
+
+    wsUnmatched.Cells(1, 1).Value = "Unmatched department_id"
+    For i = 1 To unmatchedDept.Count
+        wsUnmatched.Cells(i + 1, 1).Value = unmatchedDept(i)
+    Next i
+    wsUnmatched.Cells(1, 2).Value = "Unmatched agent_id"
+    For i = 1 To unmatchedAgent.Count
+        wsUnmatched.Cells(i + 1, 2).Value = unmatchedAgent(i)
+    Next i
+    wsUnmatched.Cells(1, 3).Value = "Unmatched language"
+    For i = 1 To unmatchedLang.Count
+        wsUnmatched.Cells(i + 1, 3).Value = unmatchedLang(i)
+    Next i
+
+    MsgBox "Transformación completada. Revisa la hoja 'Main' y 'Unmatched Values'."
+End Sub
+Sub ExportSQLFile()
+    Dim ws As Worksheet
+    Dim lastRow As Long, lastCol As Long
+    Dim i As Long, j As Long, blockStart As Long, blockEnd As Long
+    Dim sqlLine As String, filePath As String
+    Dim fso As Object, txtFile As Object
+    Dim colNames As String
+    Dim blockSize As Long
+    Dim cellValue As String
+    Dim firstValue As Boolean
+    Set ws = ThisWorkbook.Sheets("Main")
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ' Get column names
+    colNames = ""
+    For j = 1 To lastCol
+        colNames = colNames & ws.Cells(1, j).Value
+        If j < lastCol Then colNames = colNames & ", "
+    Next j
+
+    ' Define file path
+    filePath = Environ("USERPROFILE") & "\Downloads\sla_hospitality.sql"
+
+    ' Create file
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set txtFile = fso.CreateTextFile(filePath, True)
+
+    blockSize = 900
+    blockStart = 2
+
+    Do While blockStart <= lastRow
+        blockEnd = blockStart + blockSize - 1
+        If blockEnd > lastRow Then blockEnd = lastRow
+
+        sqlLine = "INSERT INTO CustomerService.SLA_ABA (" & colNames & ") VALUES" & vbCrLf
+        firstValue = True
+
+        For i = blockStart To blockEnd
+            If Not firstValue Then
+                sqlLine = sqlLine & "," & vbCrLf
+            End If
+            sqlLine = sqlLine & "("
+            For j = 1 To lastCol
+                cellValue = ws.Cells(i, j).Value
+                ' Si es la columna Date (columna 1), formatear siempre como yyyy-mm-dd
+                If j = 1 Then
+                    If IsDate(cellValue) Then
+                        cellValue = Format(cellValue, "yyyy-mm-dd")
+                    End If
+                    sqlLine = sqlLine & "'" & cellValue & "'"
+                ElseIf IsEmpty(cellValue) Or cellValue = "NULL" Then
+                    sqlLine = sqlLine & "NULL"
+                ElseIf IsNumeric(cellValue) Then
+                    sqlLine = sqlLine & cellValue
+                Else
+                    cellValue = Replace(cellValue, "'", "''")
+                    sqlLine = sqlLine & "'" & cellValue & "'"
+                End If
+                If j < lastCol Then sqlLine = sqlLine & ", "
+            Next j
+            sqlLine = sqlLine & ")"
+            firstValue = False
+        Next i
+
+        sqlLine = sqlLine & ";"
+        txtFile.WriteLine sqlLine
+
+        blockStart = blockEnd + 1
+    Loop
+
+    txtFile.Close
+    MsgBox "Archivo SQL exportado a: " & filePath
+End Sub
+
+
+
+Sub TransformAndExport()
+    Call SLAHospitalitytoSQL
+    Call ExportSQLFile
+End Sub
+
+

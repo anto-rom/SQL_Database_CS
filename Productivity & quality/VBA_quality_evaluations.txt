@@ -1,0 +1,136 @@
+Report originally located in Microsoft Forms, stored locally https://forms.office.com/Pages/DesignPageV2.aspx?prevorigin=shell&origin=NeoPortalPage&subpage=design&id=IYgHtscSSUmYJ1LaZsg2x-kcEht9tRVFgsCRdAB9UNVUMDYySjhVOFlIQ1g1WTdHU0ZMVFFTTkNFVS4u&analysis=true&tab=0&branchingelementid=rdd389cdcc9074f9981bfd64863b1720d
+
+Sub ExportToSQL()
+    Dim wsMain As Worksheet, wsAgent As Worksheet, wsEvaluator As Worksheet
+    Dim wsErrores As Worksheet
+    Dim lastRow As Long, sqlFile As String, sqlText As String
+    Dim agentDict As Object, evaluatorDict As Object
+    Dim i As Long, j As Long, blockSize As Long, blockCount As Long
+    Dim rowValues As String, insertHeader As String
+    Dim cellValue As Variant
+    Dim headers As String
+    Dim unmappedAgents As Object, unmappedEvaluators As Object
+    Dim errorRow As Long
+
+    ' Inicializar objetos
+    Set wsMain = ThisWorkbook.Sheets("Main")
+    Set wsAgent = ThisWorkbook.Sheets("agent_id")
+    Set wsEvaluator = ThisWorkbook.Sheets("evaluator_id")
+    Set agentDict = CreateObject("Scripting.Dictionary")
+    Set evaluatorDict = CreateObject("Scripting.Dictionary")
+    Set unmappedAgents = CreateObject("Scripting.Dictionary")
+    Set unmappedEvaluators = CreateObject("Scripting.Dictionary")
+
+    ' Crear diccionario de agentes
+    For i = 2 To wsAgent.Cells(wsAgent.Rows.Count, 1).End(xlUp).Row
+        agentDict(wsAgent.Cells(i, 2).value) = wsAgent.Cells(i, 1).value
+    Next i
+
+    ' Crear diccionario de evaluadores
+    For i = 2 To wsEvaluator.Cells(wsEvaluator.Rows.Count, 1).End(xlUp).Row
+        evaluatorDict(wsEvaluator.Cells(i, 2).value) = wsEvaluator.Cells(i, 1).value
+    Next i
+
+    ' Obtener encabezados de columnas
+    headers = ""
+    For j = 1 To 8
+        headers = headers & "[" & wsMain.Cells(1, j).value & "]"
+        If j < 8 Then headers = headers & ", "
+    Next j
+
+    insertHeader = "SET IDENTITY_INSERT [CustomerService].[quality_evaluations] ON;" & vbCrLf & vbCrLf
+    insertHeader = insertHeader & "INSERT INTO [CustomerService].[quality_evaluations] (" & headers & ") VALUES" & vbCrLf
+    sqlText = ""
+    blockSize = 900
+    blockCount = 0
+    lastRow = wsMain.Cells(wsMain.Rows.Count, 1).End(xlUp).Row
+
+    For i = 2 To lastRow
+        rowValues = "("
+        For j = 1 To 8
+            cellValue = wsMain.Cells(i, j).value
+            If IsEmpty(cellValue) Or Trim(cellValue) = "" Then
+                rowValues = rowValues & "NULL"
+            ElseIf j = 3 Then ' agent_id
+                If agentDict.exists(cellValue) Then
+                    rowValues = rowValues & agentDict(cellValue)
+                Else
+                    rowValues = rowValues & "NULL"
+                    If Not unmappedAgents.exists(cellValue) Then unmappedAgents.Add cellValue, 1
+                End If
+            ElseIf j = 7 Then ' evaluator
+                If evaluatorDict.exists(cellValue) Then
+                    rowValues = rowValues & evaluatorDict(cellValue)
+                Else
+                    rowValues = rowValues & "NULL"
+                    If Not unmappedEvaluators.exists(cellValue) Then unmappedEvaluators.Add cellValue, 1
+                End If
+            ElseIf j = 4 Then ' Date
+                If IsDate(cellValue) Then
+                    rowValues = rowValues & "'" & Format(cellValue, "yyyy-mm-dd") & "'"
+                Else
+                    rowValues = rowValues & "NULL"
+                End If
+            ElseIf IsNumeric(cellValue) Then
+                rowValues = rowValues & cellValue
+            Else
+                rowValues = rowValues & "'" & Replace(cellValue, "'", "''") & "'"
+            End If
+            If j < 8 Then rowValues = rowValues & ", "
+        Next j
+        rowValues = rowValues & ")"
+
+        If (i - 2) Mod blockSize = 0 Then
+            If blockCount > 0 Then sqlText = sqlText & ";" & vbCrLf & vbCrLf
+            sqlText = sqlText & insertHeader
+            blockCount = blockCount + 1
+        Else
+            sqlText = sqlText & "," & vbCrLf
+        End If
+
+        sqlText = sqlText & rowValues
+    Next i
+
+    sqlText = sqlText & ";" & vbCrLf & vbCrLf & "SET IDENTITY_INSERT [CustomerService].[quality_evaluations] OFF;" & vbCrLf
+
+    ' Guardar archivo en carpeta Downloads
+    sqlFile = Environ("USERPROFILE") & "\Downloads\quality_evaluations.sql"
+    Open sqlFile For Output As #1
+    Print #1, sqlText
+    Close #1
+
+    ' Crear hoja de errores si hay mapeos fallidos
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    Worksheets("Errores_mapeo").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+
+    If unmappedAgents.Count > 0 Or unmappedEvaluators.Count > 0 Then
+        Set wsErrores = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        wsErrores.Name = "Errores_mapeo"
+        errorRow = 1
+
+        If unmappedAgents.Count > 0 Then
+            wsErrores.Cells(errorRow, 1).value = "Agentes no mapeados"
+            errorRow = errorRow + 1
+            For Each key In unmappedAgents.Keys
+                wsErrores.Cells(errorRow, 1).value = key
+                errorRow = errorRow + 1
+            Next key
+            errorRow = errorRow + 1
+        End If
+
+        If unmappedEvaluators.Count > 0 Then
+            wsErrores.Cells(errorRow, 1).value = "Evaluadores no mapeados"
+            errorRow = errorRow + 1
+            For Each key In unmappedEvaluators.Keys
+                wsErrores.Cells(errorRow, 1).value = key
+                errorRow = errorRow + 1
+            Next key
+        End If
+    End If
+
+    MsgBox "Archivo SQL guardado en: " & sqlFile & vbCrLf & vbCrLf & "Verifica la hoja 'Errores_mapeo' si hay nombres no mapeados."
+End Sub
+
