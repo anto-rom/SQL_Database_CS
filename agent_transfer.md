@@ -133,4 +133,5 @@ CREATE TABLE APP_FLOW.CustomerService.agent_transfer (
 - No sequencing of multiple transfers within the same day
 - Limited standardization of `language` values
 - No audit columns (e.g. insert timestamp, source system)
+- Missing Newly Boarded Customer and Premium indicators
 
