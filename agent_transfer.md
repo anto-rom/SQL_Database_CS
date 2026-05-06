@@ -45,7 +45,7 @@ No aggregation is applied at source.
 ---
 
 ## 4. Physical Table Definition
-´´´
+```sql
 CREATE TABLE APP_FLOW.CustomerService.agent_transfer (
 	agent_transfer_id int IDENTITY(1,1) NOT NULL,
 	[Date] date NOT NULL,
@@ -62,7 +62,9 @@ CREATE TABLE APP_FLOW.CustomerService.agent_transfer (
 	 INCLUDE ( department_id ) 
 	 WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
 	 ON [PRIMARY ] ;
-´´´
+```
+
+
 ## 5. Column Definitions
 
 | Column name        | Type          | Description |
