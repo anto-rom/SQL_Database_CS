@@ -1,3 +1,43 @@
+VIEW CREATED FROM 2 Salesforce reports: 
+
+1) 00OR600000BZourMAD
+
+CREATE TABLE APP_FLOW.CustomerService.agent_productivity (
+	agent_prod_id int IDENTITY(1,1) NOT NULL,
+	[Date] date NOT NULL,
+	agent_id int NOT NULL,
+	case_number int NOT NULL,
+	department_id int NOT NULL,
+	age int NULL,
+	CONSTRAINT PK__agent_pr__963B65ACBB683AB7 PRIMARY KEY (agent_prod_id),
+	CONSTRAINT agent_productivity_agent_FK FOREIGN KEY (agent_id) REFERENCES APP_FLOW.CustomerService.agent(agent_id)
+);
+
+
+2) 00OR600000BkWzYMAV
+
+CREATE TABLE APP_FLOW.CustomerService.agent_transfer (
+	agent_transfer_id int IDENTITY(1,1) NOT NULL,
+	[Date] date NOT NULL,
+	agent_id int NOT NULL,
+	case_number int NOT NULL,
+	department_id int NOT NULL,
+	new_department int NOT NULL,
+	[language] varchar(30) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+	case_origin varchar(30) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+	CONSTRAINT PK__agent_tr__1B6280868771AF0F PRIMARY KEY (agent_transfer_id),
+	CONSTRAINT agent_transfer_agent_FK FOREIGN KEY (agent_id) REFERENCES APP_FLOW.CustomerService.agent(agent_id)
+);
+ CREATE NONCLUSTERED INDEX IX_agent_transfer_Date_NewDepartment ON APP_FLOW.CustomerService.agent_transfer (  Date ASC  , new_department ASC  )  
+	 INCLUDE ( department_id ) 
+	 WITH (  PAD_INDEX = OFF ,FILLFACTOR = 100  ,SORT_IN_TEMPDB = OFF , IGNORE_DUP_KEY = OFF , STATISTICS_NORECOMPUTE = OFF , ONLINE = OFF , ALLOW_ROW_LOCKS = ON , ALLOW_PAGE_LOCKS = ON  )
+	 ON [PRIMARY ] ;
+
+---------------------------------------------------------------------
+
+FINAL VIEW (MISSING "newly boarded" indicator + Premium :
+
+
 ALTER VIEW CustomerService.agent_productivity_new_daily
 AS
 WITH keys AS (
