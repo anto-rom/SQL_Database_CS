@@ -50,17 +50,16 @@ No aggregation is applied at source.
 
 ## 4. Physical Table Definition
 
+'''
 CREATE TABLE APP_FLOW.CustomerService.agent_productivity (
-    agent_prod_id INT IDENTITY(1,1) NOT NULL,
-    [Date] DATE NOT NULL,
-    agent_id INT NOT NULL,
-    case_number INT NOT NULL,
-    department_id INT NOT NULL,
-    age INT NULL,
-    CONSTRAINT PK__agent_pr__963B65ACBB683AB7 PRIMARY KEY (agent_prod_id),
-    CONSTRAINT agent_productivity_agent_FK
-        FOREIGN KEY (agent_id)
-        REFERENCES APP_FLOW.CustomerService.agent(agent_id)
+	agent_prod_id int IDENTITY(1,1) NOT NULL,
+	[Date] date NOT NULL,
+	agent_id int NOT NULL,
+	case_number int NOT NULL,
+	department_id int NOT NULL,
+	age int NULL,
+	CONSTRAINT PK__agent_pr__963B65ACBB683AB7 PRIMARY KEY (agent_prod_id),
+	CONSTRAINT agent_productivity_agent_FK FOREIGN KEY (agent_id) REFERENCES APP_FLOW.CustomerService.agent(agent_id)
 );
 
 ## 5. Column Definitions
