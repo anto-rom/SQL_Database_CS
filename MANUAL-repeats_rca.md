@@ -54,7 +54,7 @@ This table is mainly used for:
 - Contains **no PII** / **limited PII** / **PII** (specify).
 - Access restricted to Customer Service analytics users.
 
-## Example
+## Physical table
 ```sql
 CREATE TABLE APP_FLOW.CustomerService.repeat_rca (
 	repeat_rca_id int IDENTITY(1,1) NOT NULL,
