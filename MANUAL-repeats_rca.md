@@ -1,21 +1,21 @@
 # Table: `CustomerService.repeats_rca`
 
-## Overview
+## 1. Overview
 This table stores **[brief business purpose of the table]**.  
 It is used for **[reporting / SLA tracking / quality / surveys / operational analysis]** within Customer Service.
 
-## Source
+## 2. Source
 - **System**: `APP_FLOW`
 - **Domain**: `CustomerService`
 - **Data Origin**: [e.g. Salesforce / Internal process / Survey tool]
 
-## Grain
+## 3. Grain
 - **One row per**: [ticket / agent / survey / date / case]
 
-## Primary Key
+## 4. Primary Key
 - `<primary_key_column>` – Surrogate key generated using `IDENTITY(1,1)`.
 
-## Columns
+## 5. Columns
 
 | Column Name | Data Type | Nullable | Description |
 |------------|----------|----------|-------------|
@@ -25,36 +25,36 @@ It is used for **[reporting / SLA tracking / quality / surveys / operational ana
 | `<column_4>` | `float` | Yes | Description of the column |
 | `<column_5>` | `varchar(n)` | Yes | Description of the column |
 
-## Business Logic
+## 6. Business Logic
 - **[Rule 1]**: Explanation of how the metric or value is calculated.
 - **[Rule 2]**: Any transformation or assumption applied.
 - **[Rule 3]**: Edge cases or exceptions, if applicable.
 
-## Relationships
+## 7. Relationships
 - `<foreign_key_column>` → `<schema>.<related_table>.<related_column>`
 - Used to join with **[dimension / fact table name]** for reporting.
 
-## Usage
+## 8. Usage
 This table is mainly used for:
 - SLA monitoring
 - Quality and performance analysis
 - Team Leader / Manager scorecards
 - Power BI dashboards and drill-through analysis
 
-## Refresh & Latency
+## 9. Refresh & Latency
 - **Refresh frequency**: [Daily / Near-real-time / On demand]
 - **Expected latency**: [e.g. D+1]
 
-## Data Quality Notes
+## 10. Data Quality Notes
 - Nullable fields may contain `NULL` when the information is not available.
 - Duplicate prevention relies on the primary key.
 - No hard deletes; historical data is preserved.
 
-## Security & Access
+## 11. Security & Access
 - Contains **no PII** / **limited PII** / **PII** (specify).
 - Access restricted to Customer Service analytics users.
 
-## Physical table
+## 12. Physical Table Definition
 ```sql
 CREATE TABLE APP_FLOW.CustomerService.repeat_rca (
 	repeat_rca_id int IDENTITY(1,1) NOT NULL,
