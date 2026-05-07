@@ -1,4 +1,4 @@
-# Table: `<schema>.<table_name>`
+# Table: `CustomerService.repeats_rca`
 
 ## Overview
 This table stores **[brief business purpose of the table]**.  
