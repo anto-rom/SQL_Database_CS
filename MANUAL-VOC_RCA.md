@@ -10,7 +10,7 @@ It supports qualitative analysis of **customer feedback**, focusing on **resolut
 ### 3. Primary Key
 - `RCA_id` – Auto-incremented surrogate key (`IDENTITY(1,1)`).
 
-### 4. Phisical table syntax
+### 4. Physical table definition
 
 ```` sql
 CREATE TABLE APP_FLOW.CustomerService.RCA_analysis (
