@@ -1,60 +1,53 @@
-# Table: `CustomerService.repeats_rca`
+## Table: `CustomerService.repeat_rca`
 
-## 1. Overview
-This table stores **[brief business purpose of the table]**.  
-It is used for **[reporting / SLA tracking / quality / surveys / operational analysis]** within Customer Service.
+### 1. Description
+This table stores **Root Cause Analysis (RCA) information for repeat customer service cases**.  
+It is used to analyse **repeat drivers**, identify **systemic vs agent‑controlled causes**, and support **Repeat Rate reporting** within Customer Service.
 
-## 2. Source
-- **System**: `APP_FLOW`
-- **Domain**: `CustomerService`
-- **Data Origin**: [e.g. Salesforce / Internal process / Survey tool]
+### 2. Grain
+- One row per **case** with repeat activity.
 
-## 3. Grain
-- **One row per**: [ticket / agent / survey / date / case]
+### 3. Primary Key
+- `repeat_rca_id` – Auto-incremented surrogate key (`IDENTITY(1,1)`).
 
-## 4. Primary Key
-- `<primary_key_column>` – Surrogate key generated using `IDENTITY(1,1)`.
+### 4. Columns
 
-## 5. Columns
+| Column Name   | Data Type | Nullable | Description |
+|--------------|----------|----------|-------------|
+| `repeat_rca_id` | `int` | No | Primary key of the table |
+| `Date` | `date` | Yes | Date when the repeat RCA was recorded |
+| `case_number` | `int` | Yes | Unique identifier of the customer service case |
+| `agent_id` | `int` | Yes | Identifier of the agent associated with the case |
+| `3_repeats` | `int` | Yes | Number of repeat interactions for the same case |
+| `repeat_rca` | `varchar` | Yes | Root cause classification of the repeat |
 
-| Column Name | Data Type | Nullable | Description |
-|------------|----------|----------|-------------|
-| `<column_1>` | `int` | No | Description of the column |
-| `<column_2>` | `date` | Yes | Description of the column |
-| `<column_3>` | `decimal(10,2)` | Yes | Description of the column |
-| `<column_4>` | `float` | Yes | Description of the column |
-| `<column_5>` | `varchar(n)` | Yes | Description of the column |
+### 5. Business Rules
+- RCA values reflect **manual classification** of repeat causes.
+- The `3_repeats` field represents the **count of repeat contacts** for the same case.
+- Records may contain `NULL` values when information is not available.
+- Historical records are not overwritten.
 
-## 6. Business Logic
-- **[Rule 1]**: Explanation of how the metric or value is calculated.
-- **[Rule 2]**: Any transformation or assumption applied.
-- **[Rule 3]**: Edge cases or exceptions, if applicable.
+### 6. Relationships
+- `agent_id` → `CustomerService.agents.agent_id`
+- `case_number` → Customer Service case fact tables
 
-## 7. Relationships
-- `<foreign_key_column>` → `<schema>.<related_table>.<related_column>`
-- Used to join with **[dimension / fact table name]** for reporting.
+### 7. Usage
+This table is used in:
+- Repeat Rate analytics
+- RCA distribution and trend analysis
+- Team Leader and Manager performance reviews
+- Power BI dashboards and drill‑through analysis
 
-## 8. Usage
-This table is mainly used for:
-- SLA monitoring
-- Quality and performance analysis
-- Team Leader / Manager scorecards
-- Power BI dashboards and drill-through analysis
+### 8. Refresh
+- **Frequency**: Daily
+- **Latency**: D+1
 
-## 9. Refresh & Latency
-- **Refresh frequency**: [Daily / Near-real-time / On demand]
-- **Expected latency**: [e.g. D+1]
+### 9.Notes
+- RCA categories are **not modified after ingestion** to preserve auditability.
+- The table is designed for **diagnostic analysis**, not SLA measurement.
 
-## 10. Data Quality Notes
-- Nullable fields may contain `NULL` when the information is not available.
-- Duplicate prevention relies on the primary key.
-- No hard deletes; historical data is preserved.
 
-## 11. Security & Access
-- Contains **no PII** / **limited PII** / **PII** (specify).
-- Access restricted to Customer Service analytics users.
-
-## 12. Physical Table Definition
+## 10. Physical Table Definition
 ```sql
 CREATE TABLE APP_FLOW.CustomerService.repeat_rca (
 	repeat_rca_id int IDENTITY(1,1) NOT NULL,
