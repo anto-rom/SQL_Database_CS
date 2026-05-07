@@ -73,7 +73,7 @@ This table is **not automatically ingested**.
 
 This process is implemented in:
 - **Excel VBA macro (3 modules)**  
-  `[https://fintraxgroupholdings.sharepoint.com/:t:/r/teams/CSCITeam-Qualitystatsshared/Shared%20Documents/DATA%20BASE/DB%20documents%20%26%20Training/Repeats%20macro%203%20modules.txt?csf=1&web=1&e=K9haKv)`
+  🔗 https://fintraxgroupholdings.sharepoint.com/:t:/r/teams/CSCITeam-Qualitystatsshared/Shared%20Documents/DATA%20BASE/DB%20documents%20%26%20Training/Repeats%20macro%203%20modules.txt?csf=1&web=1&e=K9haKv
 
 ---
 
