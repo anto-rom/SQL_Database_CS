@@ -29,6 +29,15 @@ Each row represents **one VoC survey completed by a customer**, optionally linke
 ### Salesforce Report
 - **Report ID:** `00OR6000009TMpbMAG`
 - **Report Name:** Voice of the Customer (VoC)
+  
+### Important Note on Source Change
+⚠️ **Source transition in progress**
+
+- Historically, surveys were managed via **Vicasso**.
+- Vicasso license is being **discontinued**.
+- A **new internal Salesforce survey solution** has been developed by the Salesforce Team.
+- The Salesforce report backing this table **will change** accordingly.
+
 
 ### Functional Definition
 This Salesforce report contains customer survey responses with the following characteristics:
