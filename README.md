@@ -111,7 +111,7 @@ Maintain Data Integrity: All agent and case changes should be made in SQL, not j
 
 Author & Maintenance
 
-Author: Antonio Romero [antonio.romero@weareplanet.com]
+Author: Antonio Romero [antonio.33@61@gmail.com]
 Contact: For technical issues or schema updates, contact the Continuous Improvement Senior Lead.
 
 Additional Resources
